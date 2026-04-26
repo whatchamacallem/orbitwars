@@ -1,0 +1,21 @@
+// SPDX-FileCopyrightText: © 2017-2026 Adrian Johnston.
+// SPDX-License-Identifier: MIT
+// This file is licensed under the MIT license found in the LICENSE.md file.
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "(gdb) Launch",
+			"type": "cppdbg",
+			"request": "launch",
+			"program": "${workspaceFolder}/test",
+			"args": ["help", "runtests"],
+			"stopAtEntry": false,
+			"cwd": "${workspaceFolder}/build",
+			"environment": [],
+			"externalConsole": false,
+			"MIMode": "gdb",
+			"setupCommands": []
+		}
+	]
+}

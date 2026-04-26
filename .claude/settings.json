@@ -1,0 +1,28 @@
+{
+  "respectGitignore": true,
+  "env": {
+    "CLAUDE_CODE": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "Read(*)",
+      "Skill(*)",
+      "WebFetch(*)",
+      "WebSearch(*)",
+      "Write(*)"
+    ],
+    "deny": [
+      "Edit(/mnt/**)",
+      "Read(/mnt/**)",
+      "Write(/mnt/**)"
+    ],
+    "additionalDirectories": [
+      "/home/t/.claude"
+    ]
+  },
+  "autoMemoryEnabled": false
+}

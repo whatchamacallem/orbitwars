@@ -1,0 +1,16 @@
+// SPDX-FileCopyrightText: © 2017-2026 Adrian Johnston.
+// SPDX-License-Identifier: MIT
+// This file is licensed under the MIT license found in the LICENSE.md file.
+{
+    "cSpell.words": [
+        "kaggle",
+        "orbitwars",
+        "venv"
+    ],
+    "markdownlint.config": {
+        "MD033": {
+            // Doxygen renders images with the alt text after them.
+            "allowed_elements": ["img"]
+        }
+    }
+}
