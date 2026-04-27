@@ -1,8 +1,10 @@
 # Kaggle
 
-Do not push a notebook to kaggle unless explicitly asked.
-
 Assume all edits are to "orbitwars.ipynb" unless otherwise specified.
+
+read rules.md for all the rules.
+
+Do not push a notebook to kaggle unless explicitly asked.
 
 All code and text has to be formatted so it is human readable. Code stored in
 strings has to be broken out across multiple lines. In notebooks, cell `source`
