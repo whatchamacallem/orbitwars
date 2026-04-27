@@ -21,7 +21,8 @@
       "Write(/mnt/**)"
     ],
     "additionalDirectories": [
-      "/home/t/.claude"
+      "/home/t/.claude",
+      "/home/t/orbitwars/.claude"
     ]
   },
   "autoMemoryEnabled": false
