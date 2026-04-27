@@ -8,11 +8,11 @@ Usage in your agent:
     def agent(obs):
         viz.record(obs)
         viz.add_line(obs['step'], x1, y1, x2, y2, color='cyan')   # optional
-        viz.add_text(obs['step'], "some debug text")                # optional
+        viz.add_text(obs['step'], "some debug text")              # optional
         ...
 
     # After env.run():
-    viz.save("/mnt/c/Users/ajohn/Downloads/orbitwars.html")
+    viz.save("viz.html")
 """
 
 import json
