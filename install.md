@@ -28,8 +28,19 @@ Install jupyterlab the same way as the other packages:
 pip install --break-system-packages jupyterlab
 ```
 
-To render the notebook locally instead of uploading to Kaggle:
+To render the notebook locally instead of uploading to Kaggle. The link is in the spew.
 
 ```bash
 jupyter lab --no-browser &
 ```
+
+## Git and Notebook Outputs
+
+Install `nbstripout` to automatically strip notebook outputs on `git add`:
+
+```bash
+pip install --break-system-packages nbstripout
+nbstripout --install
+```
+
+Outputs are preserved locally but never committed to git.
