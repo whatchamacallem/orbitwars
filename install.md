@@ -19,3 +19,17 @@ To undo the system-wide install:
 ```bash
 pip uninstall --break-system-packages kaggle-environments
 ```
+
+## Local Notebook Rendering
+
+Install jupyterlab the same way as the other packages:
+
+```bash
+pip install --break-system-packages jupyterlab
+```
+
+To render the notebook locally instead of uploading to Kaggle:
+
+```bash
+jupyter lab --no-browser &
+```
