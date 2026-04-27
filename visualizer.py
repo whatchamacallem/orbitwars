@@ -27,7 +27,15 @@ class Visualizer:
         """Call once per turn with the raw obs dict."""
         if hasattr(obs, '__dict__'):
             obs = vars(obs)
-        step = obs.get('step', len(self._frames))
+        if not isinstance(obs, dict):
+            raise TypeError(f"obs must be a dict, got {type(obs)}")
+        step = obs['step']
+        if 'planets' not in obs:
+            raise KeyError(f"obs missing 'planets' at step {step}")
+        if 'fleets' not in obs:
+            raise KeyError(f"obs missing 'fleets' at step {step}")
+        if not obs['planets']:
+            return  # step 0 init call has empty state; skip it
         entry = {'obs': _serialize(obs), 'lines': [], 'texts': []}
         self._frame_map[step] = len(self._frames)
         self._frames.append(entry)
@@ -58,14 +66,31 @@ class Visualizer:
         print(f"Visualizer saved to {path} ({len(self._frames)} frames)")
 
 
-def _serialize(obj):
-    """Recursively convert Namespace/objects to plain dicts."""
+_PLANET_FIELDS = ('id', 'owner', 'x', 'y', 'radius', 'ships', 'production')
+_FLEET_FIELDS  = ('id', 'owner', 'x', 'y', 'angle', 'from_planet_id', 'ships')
+
+def _serialize(obj, _key=None):
+    """Recursively convert Namespace/objects to plain dicts/lists."""
     if isinstance(obj, dict):
-        return {k: _serialize(v) for k, v in obj.items()}
+        out = {}
+        for k, v in obj.items():
+            out[k] = _serialize(v, _key=k)
+        return out
     if isinstance(obj, (list, tuple)):
-        return [_serialize(x) for x in obj]
+        # Detect Planet/Fleet objects stored as list elements and normalize them
+        result = []
+        for item in obj:
+            result.append(_serialize(item, _key=_key))
+        return result
     if hasattr(obj, '__dict__'):
-        return _serialize(vars(obj))
+        d = vars(obj)
+        # Planet-like object: has all planet fields
+        if all(f in d for f in _PLANET_FIELDS):
+            return [d[f] for f in _PLANET_FIELDS]
+        # Fleet-like object: has all fleet fields
+        if all(f in d for f in _FLEET_FIELDS):
+            return [d[f] for f in _FLEET_FIELDS]
+        return _serialize(d)
     return obj
 
 
@@ -127,7 +152,7 @@ def _build_html(frames):
 </div>
 <script>
 const FRAMES = {frames_json};
-const COLORS = ['#4af','#f84','#4f8','#f4f'];
+const COLORS = ['#44aaff','#ff8844','#44ff88','#ff44ff'];
 const NEUTRAL_COLOR = '#666';
 const COMET_COLOR = '#fc8';
 
@@ -156,7 +181,7 @@ function tr(r) {{ return r * 6.4; }}
 
 function drawFrame(idx) {{
   const frame = FRAMES[idx];
-  const obs = frame.obs || {{}};
+  const obs = frame.obs;
   ctx.clearRect(0, 0, 640, 640);
 
   // Background grid (faint)
@@ -169,13 +194,9 @@ function drawFrame(idx) {{
 
   // Sun
   const sunRadius = 10;
-  const grad = ctx.createRadialGradient(tx(50), ty(50), 0, tx(50), ty(50), tr(sunRadius));
-  grad.addColorStop(0, '#ffe060');
-  grad.addColorStop(0.5, '#ff8000');
-  grad.addColorStop(1, '#4400');
   ctx.beginPath();
   ctx.arc(tx(50), ty(50), tr(sunRadius), 0, Math.PI*2);
-  ctx.fillStyle = grad;
+  ctx.fillStyle = '#888888';
   ctx.fill();
 
   const cometIds = new Set(obs.comet_planet_ids || []);
@@ -217,7 +238,7 @@ function drawFrame(idx) {{
 
     // ID label (small, above)
     ctx.fillStyle = '#aaa';
-    ctx.font = '8px monospace';
+    ctx.font = '13px monospace';
     ctx.fillText('P' + id, cx, cy - cr - 5);
   }}
 
@@ -228,10 +249,10 @@ function drawFrame(idx) {{
     const col = ownerColor(owner);
 
     // Arrow body
-    const len = 6 + Math.log1p(ships) * 1.5;
+    const len = (6 + Math.log1p(ships) * 1.5) * 1.5;
     const dx = Math.cos(angle), dy = Math.sin(angle);
     ctx.strokeStyle = col;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 2.25;
     ctx.beginPath();
     ctx.moveTo(fx - dx*len*0.5, fy - dy*len*0.5);
     ctx.lineTo(fx + dx*len*0.5, fy + dy*len*0.5);
@@ -243,18 +264,18 @@ function drawFrame(idx) {{
     const hx = fx + dx*len*0.5, hy = fy + dy*len*0.5;
     const px = -dy, py = dx; // perpendicular
     ctx.moveTo(hx, hy);
-    ctx.lineTo(hx - dx*5 + px*3, hy - dy*5 + py*3);
-    ctx.lineTo(hx - dx*5 - px*3, hy - dy*5 - py*3);
+    ctx.lineTo(hx - dx*7.5 + px*4.5, hy - dy*7.5 + py*4.5);
+    ctx.lineTo(hx - dx*7.5 - px*4.5, hy - dy*7.5 - py*4.5);
     ctx.closePath();
     ctx.fill();
 
     // Ship count (for larger fleets)
     if (ships >= 5) {{
       ctx.fillStyle = '#fff';
-      ctx.font = '8px monospace';
+      ctx.font = '13px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(ships, fx + py*9, fy + py*9 - 2);
+      ctx.fillText(ships, fx + px*9, fy + py*9);
     }}
   }}
 
