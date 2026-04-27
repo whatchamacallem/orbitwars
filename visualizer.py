@@ -29,7 +29,8 @@ class Visualizer:
             obs = vars(obs)
         if not isinstance(obs, dict):
             raise TypeError(f"obs must be a dict, got {type(obs)}")
-        step = obs['step']
+        # obs.step=N means the engine has completed N-1 rotations, so planets sit at N-1.
+        step = obs['step'] - 1
         if 'planets' not in obs:
             raise KeyError(f"obs missing 'planets' at step {step}")
         if 'fleets' not in obs:
