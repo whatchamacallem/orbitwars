@@ -36,14 +36,14 @@ class Visualizer:
             raise KeyError(f"obs missing 'fleets' at step {step}")
         if not obs['planets']:
             return  # step 0 init call has empty state; skip it
-        entry = {'obs': _serialize(obs), 'lines': [], 'texts': []}
+        entry = {'obs': _serialize(obs), 'lines': [], 'texts': [], 'labels': []}
         self._frame_map[step] = len(self._frames)
         self._frames.append(entry)
 
     def _get_or_create(self, step):
         if step in self._frame_map:
             return self._frames[self._frame_map[step]]
-        entry = {'obs': {}, 'lines': [], 'texts': []}
+        entry = {'obs': {}, 'lines': [], 'texts': [], 'labels': []}
         self._frame_map[step] = len(self._frames)
         self._frames.append(entry)
         return entry
@@ -57,6 +57,12 @@ class Visualizer:
     def add_text(self, step, text):
         """Add a debug text string shown when that frame is active."""
         self._get_or_create(step)['texts'].append(str(text))
+
+    def add_label(self, step, x, y, text, color='#ffffff', font='13px monospace'):
+        """Draw a text label at canvas position (x, y) in game-world coordinates."""
+        self._get_or_create(step)['labels'].append(
+            {'x': x, 'y': y, 'text': str(text), 'color': color, 'font': font}
+        )
 
     def save(self, path):
         """Write the interactive HTML visualizer to path."""
@@ -113,7 +119,7 @@ def _build_html(frames):
   #speedLabel {{ min-width: 60px; }}
   #main {{ display: flex; gap: 12px; align-items: flex-start; }}
   canvas {{ border: 1px solid #334; background: #05050f; }}
-  #sidebar {{ width: 260px; max-height: 640px; overflow-y: auto; font-size: 0.75rem; }}
+  #sidebar {{ width: 520px; max-height: 640px; overflow-y: auto; font-size: 0.75rem; }}
   .panel {{ background: #0f1520; border: 1px solid #234; border-radius: 4px; padding: 6px 8px; margin-bottom: 8px; }}
   .panel h3 {{ margin: 0 0 4px; color: #7af; font-size: 0.8rem; border-bottom: 1px solid #234; padding-bottom: 2px; }}
   .item {{ margin: 2px 0; }}
@@ -287,6 +293,15 @@ function drawFrame(idx) {{
     ctx.strokeStyle = line.color || 'yellow';
     ctx.lineWidth = line.width || 1;
     ctx.stroke();
+  }}
+
+  // Canvas labels (e.g. future-position planet markers)
+  for (const lbl of (frame.labels || [])) {{
+    ctx.font = lbl.font || '13px monospace';
+    ctx.fillStyle = lbl.color || '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(lbl.text, tx(lbl.x), ty(lbl.y));
   }}
 
   // Update sidebar

@@ -15,7 +15,7 @@ and converting it back to an array (each line ending with `\n` except the last),
 then write it back with `json.dump`.
 
 No unicode characters anywhere in notebooks or source files. Use plain ASCII
-only (e.g. `-` not `─`, `->` not `→`).
+only (e.g. `-` not `─`, `->` not `→`). In strings use "'" not "\"".
 
 Credentials: `KAGGLE_API_TOKEN` env var is already in `~/.kaggle/kaggle.json` as
 `{"username":"ajohnston7354","key":"..."}`.
