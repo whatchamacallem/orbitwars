@@ -14,6 +14,8 @@ FuturePos = dict[Planet, tuple[float, float]]
 ProximityGraph = dict[Planet, list[tuple[Planet, float]]]
 # Planet -> [(owner, ships, travel_time, src_x, src_y, arrival_x, arrival_y)]
 DestinationList = dict[Planet, list[tuple[int, float, float, float, float, float, float]]]
+# (planet, value, orders)
+AttackOrders = tuple[Planet | None, int, list[list]]
 
 sys.path.insert(0, '/home/t/orbitwars')
 from visualizer import Visualizer
@@ -175,9 +177,6 @@ class Hellburner:
         if lines:
             viz.add_text(self.scene_step, 'dest_list:\n' + '\n'.join(lines))
 
-    def is_destination(self, planet: Planet) -> bool:
-        return bool(self.destination_list.get(planet))
-
     def simulate_planet_timeline(self, planet: Planet, destination_list: DestinationList) -> tuple[int, float]:
         """Simulate planet ownership/production over time given a list of inbound fleets.
         All arrivals at the same integer turn are resolved simultaneously (highest stack wins).
@@ -230,80 +229,99 @@ class Hellburner:
 
         return cur_owner, cur_ships
 
-    def evaluate_destinations(self) -> tuple[Planet | None, int, list[list]]:
+    def evaluate_strategy(self, target: Planet) -> tuple[list[list], bool]:
+        """Find the set of nearby ships needed to attack or reinforce a target.
+        Returns (orders, battle_won).
+        """
+        possible_origins = sorted(
+            [(neighbor, dist) for neighbor, dist in self.proximity_graph.get(target, [])
+                if neighbor.owner == self.player], key=lambda x: x[1])
+
+        orders: list[list] = []
+        trial_destination_list = {k: list(v) for k, v in self.destination_list.items()}
+        trial_destination_list.setdefault(target, [])
+        battle_won = False
+        for neighbor, _ in possible_origins:
+            if neighbor.ships == 0:
+                continue
+            ships_to_send = int(neighbor.ships)
+            angle, ix, iy, travel = self.intercept_planet(
+                neighbor.x, neighbor.y, target, ships_to_send)
+
+            trial_destination_list[target].append((self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy))
+            orders.append([neighbor.id, angle, ships_to_send])
+            trial_end_owner, _ = self.simulate_planet_timeline(target, trial_destination_list)
+            if trial_end_owner == self.player:
+                battle_won = True
+                break
+
+        return orders, battle_won
+
+    def evaluate_destinations(self) -> AttackOrders:
         """Score every reachable planet and pick the best destination."""
-        best_planet = None
-        best_value = -65535
-        best_orders: list[list] = []
+        best_attack_orders: AttackOrders = (None, -65535, [])
 
         for target in self.planets:
-            is_owned = (target.owner == self.player)
+            if not bool(self.proximity_graph.get(target)):
+                continue # effectively unreachable
 
-            if is_owned:
-                if not self.is_destination(target):
-                    continue
+            # is owned
+            if (target.owner == self.player):
+                if not bool(self.destination_list.get(target)):
+                    continue # no incoming
+
                 end_owner, _ = self.simulate_planet_timeline(target, self.destination_list)
                 threatened = (end_owner != self.player)
                 if not threatened:
                     continue
 
-                # Find nearby owned planets sorted by proximity_graph distance, then
-                # try adding possible reinforcements one by one (closest first)
-                # until the planet is saved.
-                possible_reinforcements = sorted(
-                    [(neighbor, dist) for neighbor, dist in self.proximity_graph.get(target, [])
-                        if neighbor.owner == self.player], key=lambda x: x[1])
+                orders, battle_won = self.evaluate_strategy(target)
 
-                rescue_orders: list[list] = []
-                trial_destination_list = {k: list(v) for k, v in self.destination_list.items()}
-                saved = False
-                for neighbor, _ in possible_reinforcements:
-                    if neighbor.ships == 0:
-                        continue
-                    ships_to_send = int(neighbor.ships)
-                    angle, ix, iy, travel = self.intercept_planet(
-                        neighbor.x, neighbor.y, target, ships_to_send)
-
-                    trial_destination_list[target].append((self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy))
-                    rescue_orders.append([neighbor.id, angle, ships_to_send])
-                    trial_end_owner, _ = self.simulate_planet_timeline(target, trial_destination_list)
-                    if trial_end_owner == self.player:
-                        saved = True
-                        break
-
-                if not saved:
+                if not battle_won:
                     continue  # can't save it; skip for now
 
                 value = target.production
+                _, best_value, best_orders = best_attack_orders
                 if (value > best_value or
-                        (value == best_value and len(rescue_orders) < len(best_orders))):
-                    best_planet = target
-                    best_value = value
-                    best_orders = rescue_orders
+                        (value == best_value and len(orders) < len(best_orders))):
+                    best_attack_orders = (target, value, orders)
 
-            is_neutral = (target.owner == -1)
+            # not owned
+            else:
+                end_owner, _ = self.simulate_planet_timeline(target, self.destination_list)
+                if end_owner == self.player:
+                    continue  # already won by in-flight fleets
 
-            # Accumulate ships from multiple sources (fastest-arriving first)
+                orders, battle_won = self.evaluate_strategy(target)
 
-            # Don't attack neutral planets that can't be taken outright
+                if not battle_won:
+                    continue
 
-            # Simulate with fleets added
+                value = target.production
+                if (target.owner == -1):
+                    value = value - 1
 
-        return best_planet, best_value, best_orders
+                _, best_value, best_orders = best_attack_orders
+                if (value > best_value or
+                        (value == best_value and len(orders) < len(best_orders))):
+                    best_attack_orders = (target, value, orders)
 
-    def viz_orders(self, best_planet: 'Planet | None', best_value: int, best_orders: list[list]) -> None:
+        return best_attack_orders
+
+    def viz_orders(self, best: AttackOrders) -> None:
         """Visualize evaluate_destinations result: target ring, order arrows, text summary."""
-        if best_planet is None or not best_orders:
+        attack_planet, attack_value, attack_orders = best
+        if attack_planet is None or not attack_orders:
             return
 
         planet_by_id = {p.id: p for p in self.planets}
-        viz.add_label(self.scene_step, best_planet.x, best_planet.y,
-                           f'P{best_planet.id} val={best_value}', color='#ffff44')
+        viz.add_label(self.scene_step, attack_planet.x, attack_planet.y,
+                           f'P{attack_planet.id} val={attack_value}', color='#ffff44')
 
-        lines = [f'orders -> P{best_planet.id} (val={best_value}):']
-        for from_id, angle, ships in best_orders:
+        lines = [f'orders -> P{attack_planet.id} (val={attack_value}):']
+        for from_id, angle, ships in attack_orders:
             src = planet_by_id[from_id]
-            _, ix, iy, travel = self.intercept_planet(src.x, src.y, best_planet, ships)
+            _, ix, iy, travel = self.intercept_planet(src.x, src.y, attack_planet, ships)
             viz.add_line(self.scene_step, src.x, src.y, ix, iy, color='#ffff44', width=2)
             lines.append(f'  P{from_id}({src.ships}sh) -> {int(ships)}sh angle={angle:.3f} t={travel:.1f}')
 
@@ -314,6 +332,8 @@ class Hellburner:
         best_mine = None
         best_enemy = None
         for mine in self.owned_planets:
+            if int(mine.ships) == 0:
+                continue
             for enemy in self.enemy_planets:
                 _, _, _, travel = self.intercept_planet(mine.x, mine.y, enemy, int(mine.ships))
                 if travel < best_travel:
@@ -352,17 +372,18 @@ class Hellburner:
         self.build_proximity_graph()
         self.build_destination_list()
 
-        best_planet, best_value, best_orders = self.evaluate_destinations()
+        attack = self.evaluate_destinations()
 
         elapsed_ms = (time.perf_counter() - _t0) * 1000
         viz.add_text(self.scene_step, f'hellburner ms: {elapsed_ms:.2f}ms')
-        self.viz_orders(best_planet, best_value, best_orders)
+        self.viz_orders(attack)
         #self.viz_proximity_graph()
         #self.viz_destination_list()
 
         moves = []
-        if best_planet is not None:
-            moves = best_orders
+        attack_planet, _, attack_orders = attack
+        if attack_planet is not None:
+            moves = attack_orders
         else:
             self.exec_snipe(moves)
 
@@ -372,4 +393,9 @@ class Hellburner:
 
 def hellburner(obs: dict[str, Any]) -> list[Any]:
     _agent = Hellburner()
-    return _agent.main(obs)
+    try:
+        return _agent.main(obs)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return []

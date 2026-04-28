@@ -2,11 +2,13 @@
 
 ## General
 
-Assume all edits are to "hellburner.py" unless otherwise specified.
+Assume all references and edits are to `hellburner.py` unless otherwise
+specified.
 
-Ignore the git history. Deleted code is meant to be deleted.
+Ignore the `git` history. Deleted code is meant to be deleted. Use the `python3`
+command not `python`.
 
-Read rules.md for all the rules.
+Read `rules.md` for all the rules.
 
 ## Notebooks
 
