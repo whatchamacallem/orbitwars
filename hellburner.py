@@ -230,11 +230,11 @@ class Hellburner:
 
         return cur_owner, cur_ships
 
-    def evaluate_destinations(self) -> tuple[Planet | None, int, list[Any]]:
+    def evaluate_destinations(self) -> tuple[Planet | None, int, list[list]]:
         """Score every reachable planet and pick the best destination."""
         best_planet = None
         best_value = -65535
-        best_orders = []
+        best_orders: list[list] = []
 
         for target in self.planets:
             is_owned = (target.owner == self.player)
@@ -247,7 +247,6 @@ class Hellburner:
                 if not threatened:
                     continue
 
-
                 # Find nearby owned planets sorted by proximity_graph distance, then
                 # try adding possible reinforcements one by one (closest first)
                 # until the planet is saved.
@@ -255,19 +254,18 @@ class Hellburner:
                     [(neighbor, dist) for neighbor, dist in self.proximity_graph.get(target, [])
                         if neighbor.owner == self.player], key=lambda x: x[1])
 
-                # (source, angle, ships)
-                rescue_orders: list[tuple[Planet, float, float]] = []
+                rescue_orders: list[list] = []
                 trial_destination_list = {k: list(v) for k, v in self.destination_list.items()}
                 saved = False
                 for neighbor, _ in possible_reinforcements:
-                    if neighbor.ships <= 1:
+                    if neighbor.ships == 0:
                         continue
-                    ships_to_send = int(neighbor.ships) - 1
+                    ships_to_send = int(neighbor.ships)
                     angle, ix, iy, travel = self.intercept_planet(
                         neighbor.x, neighbor.y, target, ships_to_send)
 
                     trial_destination_list[target].append((self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy))
-                    rescue_orders.append((neighbor, angle, ships_to_send))
+                    rescue_orders.append([neighbor.id, angle, ships_to_send])
                     trial_end_owner, _ = self.simulate_planet_timeline(target, trial_destination_list)
                     if trial_end_owner == self.player:
                         saved = True
@@ -293,20 +291,21 @@ class Hellburner:
 
         return best_planet, best_value, best_orders
 
-    def viz_orders(self, best_planet: 'Planet | None', best_value: int, best_orders: list) -> None:
+    def viz_orders(self, best_planet: 'Planet | None', best_value: int, best_orders: list[list]) -> None:
         """Visualize evaluate_destinations result: target ring, order arrows, text summary."""
         if best_planet is None or not best_orders:
             return
 
-        # Bright ring around the target planet
+        planet_by_id = {p.id: p for p in self.planets}
         viz.add_label(self.scene_step, best_planet.x, best_planet.y,
                            f'P{best_planet.id} val={best_value}', color='#ffff44')
 
         lines = [f'orders -> P{best_planet.id} (val={best_value}):']
-        for src, angle, ships in best_orders:
+        for from_id, angle, ships in best_orders:
+            src = planet_by_id[from_id]
             _, ix, iy, travel = self.intercept_planet(src.x, src.y, best_planet, ships)
             viz.add_line(self.scene_step, src.x, src.y, ix, iy, color='#ffff44', width=2)
-            lines.append(f'  P{src.id}({src.ships}sh) -> {int(ships)}sh angle={angle:.3f} t={travel:.1f}')
+            lines.append(f'  P{from_id}({src.ships}sh) -> {int(ships)}sh angle={angle:.3f} t={travel:.1f}')
 
         viz.add_text(self.scene_step, '\n'.join(lines))
 
@@ -323,13 +322,13 @@ class Hellburner:
                     best_enemy = enemy
         if best_mine is None or best_mine.ships < 10:
             reason = 'no owned planet' if best_mine is None else f'P{best_mine.id} ships={best_mine.ships} < 5'
-            viz.add_text(self.scene_step, f'snipe: skip ({reason})')
+            #viz.add_text(self.scene_step, f'snipe: skip ({reason})')
             return
         ships = int(best_mine.ships)
         angle, ix, iy, travel = self.intercept_planet(best_mine.x, best_mine.y, best_enemy, ships)
         moves.append([best_mine.id, angle, ships])
-        viz.add_text(self.scene_step, f'snipe: P{best_mine.id}({ships}sh) -> P{best_enemy.id}({best_enemy.ships}sh) angle={angle:.3f} travel={travel:.1f}t')
-        viz.add_line(self.scene_step, best_mine.x, best_mine.y, ix, iy, color='#ff44ff', width=2)
+        #viz.add_text(self.scene_step, f'snipe: P{best_mine.id}({ships}sh) -> P{best_enemy.id}({best_enemy.ships}sh) angle={angle:.3f} travel={travel:.1f}t')
+        #viz.add_line(self.scene_step, best_mine.x, best_mine.y, ix, iy, color='#ff44ff', width=2)
 
     def main(self, obs: dict[str, Any]) -> list[Any]:
         viz.record(obs)
@@ -362,11 +361,15 @@ class Hellburner:
         #self.viz_destination_list()
 
         moves = []
-        self.exec_snipe(moves)
+        if best_planet is not None:
+            moves = best_orders
+        else:
+            self.exec_snipe(moves)
+
+        #viz.add_text(self.scene_step, 'moves: ' + str(moves))
         return moves
 
 
-_agent = Hellburner()
-
 def hellburner(obs: dict[str, Any]) -> list[Any]:
+    _agent = Hellburner()
     return _agent.main(obs)

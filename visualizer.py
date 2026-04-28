@@ -22,6 +22,7 @@ class Visualizer:
     def __init__(self):
         self._frames = []   # list of {obs, lines, texts}
         self._frame_map = {}  # step -> index
+        self._recording = True
 
     def record(self, obs):
         """Call once per turn with the raw obs dict."""
@@ -37,6 +38,9 @@ class Visualizer:
             raise KeyError(f"obs missing 'fleets' at step {step}")
         if not obs['planets']:
             return  # step 0 init call has empty state; skip it
+        self._recording = obs.get('player') == 0
+        if not self._recording:
+            return
         entry = {'obs': _serialize(obs), 'lines': [], 'texts': [], 'labels': []}
         self._frame_map[step] = len(self._frames)
         self._frames.append(entry)
@@ -51,16 +55,22 @@ class Visualizer:
 
     def add_line(self, step, x1, y1, x2, y2, color='yellow', width=1):
         """Add a colored line segment overlay to a specific frame."""
+        if not self._recording:
+            return
         self._get_or_create(step)['lines'].append(
             {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'color': color, 'width': width}
         )
 
     def add_text(self, step, text):
         """Add a debug text string shown when that frame is active."""
+        if not self._recording:
+            return
         self._get_or_create(step)['texts'].append(str(text))
 
     def add_label(self, step, x, y, text, color='#ffffff', font='13px monospace'):
         """Draw a text label at canvas position (x, y) in game-world coordinates."""
+        if not self._recording:
+            return
         self._get_or_create(step)['labels'].append(
             {'x': x, 'y': y, 'text': str(text), 'color': color, 'font': font}
         )
