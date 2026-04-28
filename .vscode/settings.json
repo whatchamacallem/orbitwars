@@ -3,7 +3,9 @@
 // This file is licensed under the MIT license found in the LICENSE.md file.
 {
     "cSpell.words": [
+        "defeatable",
         "Hellburner",
+        "isinstance",
         "kaggle",
         "orbitwars",
         "venv"

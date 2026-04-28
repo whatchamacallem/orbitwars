@@ -1,6 +1,8 @@
 # Kaggle
 
-Assume all edits are to "orbitwars.ipynb" unless otherwise specified.
+Assume all edits are to "hellburner.py" unless otherwise specified.
+
+Ignore the git history. Deleted code is meant to be deleted.
 
 read rules.md for all the rules.
 
@@ -12,6 +14,10 @@ must be a JSON array of strings (one per line, each ending with `\n` except the
 last), never a single concatenated string.
 
 Use object as keys and not object ids.
+
+don't use get() to provide defaults. just assume everything is the right type.
+don't use isinstance or validate inputs. expect everything to be correct so bugs
+can be surfaced instead of hidden.
 
 Never delete or modify comments or code except to update or modify as requested.
 Do not delete dead code. Do not delete Python documentation """ like this """.
