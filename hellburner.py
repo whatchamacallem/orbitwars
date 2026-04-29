@@ -5,17 +5,21 @@ from collections import defaultdict
 from typing import Any
 
 from kaggle_environments.envs.orbit_wars.orbit_wars import (
-    Planet, Fleet, CENTER, ROTATION_RADIUS_LIMIT,
-    distance, point_to_segment_distance
+    Fleet, CENTER, ROTATION_RADIUS_LIMIT, distance, point_to_segment_distance
 )
 
-OrbitalInfo = dict[Planet, tuple[float, float] | None]
-FuturePos = dict[Planet, tuple[float, float]]
-ProximityGraph = dict[Planet, list[tuple[Planet, float]]]
-# Planet -> [(owner, ships, travel_time, src_x, src_y, arrival_x, arrival_y)]
-DestinationList = dict[Planet, list[tuple[int, float, float, float, float, float, float]]]
+class HPlanet:
+    def __init__(self, id, owner, x, y, radius, ships, production):
+        self.id = id; self.owner = owner; self.x = x; self.y = y
+        self.radius = radius; self.ships = ships; self.production = production
+
+OrbitalInfo = dict[HPlanet, tuple[float, float] | None]
+FuturePos = dict[HPlanet, tuple[float, float]]
+ProximityGraph = dict[HPlanet, list[tuple['HPlanet', float]]]
+# HPlanet -> [(owner, ships, travel_time, src_x, src_y, arrival_x, arrival_y)]
+DestinationList = dict[HPlanet, list[tuple[int, float, float, float, float, float, float]]]
 # (planet, value, orders)
-AttackOrders = tuple[Planet | None, int, list[list]]
+AttackOrders = tuple[HPlanet | None, int, list[list]]
 
 sys.path.insert(0, '/home/t/orbitwars')
 from visualizer import Visualizer
@@ -40,9 +44,9 @@ class Hellburner:
         self.player: int = 0
         self.scene_step: int = 0
         self.angular_velocity: float = 0.0
-        self.planets: list[Planet] = []
-        self.owned_planets: list[Planet] = []
-        self.enemy_planets: list[Planet] = []
+        self.planets: list[HPlanet] = []
+        self.owned_planets: list[HPlanet] = []
+        self.enemy_planets: list[HPlanet] = []
         self.fleets: list[Fleet] = []
         self.orbital_info: OrbitalInfo = {}
         self.proximity_graph: ProximityGraph = {}
@@ -107,7 +111,7 @@ class Hellburner:
 
     def intercept_planet(
         self,
-        sx: float, sy: float, target: Planet, ships: int | float,
+        sx: float, sy: float, target: HPlanet, ships: int | float,
         tol: float = 1e-6, max_iters: int = 30,
     ) -> tuple[float, float, float, float]:
         """Aim angle from (sx, sy) toward where target will be when a fleet arrives.
@@ -124,17 +128,17 @@ class Hellburner:
             # Seed: straight-line travel time to the planet's current position.
             travel = distance((sx, sy), (target.x, target.y)) / speed
             for _ in range(max_iters):
-                a = ia + self.angular_velocity * (self.scene_step + travel - 0.5)
+                a = ia + self.angular_velocity * (self.scene_step + travel - 1.0)
                 new_tx, new_ty = cx + r * math.cos(a), cy + r * math.sin(a)
                 new_travel = distance((sx, sy), (new_tx, new_ty)) / speed
                 # Damp update: average old and new travel to suppress oscillation.
-                new_travel = 0.5 * (travel + new_travel - 0.5)
+                new_travel = 0.5 * (travel + new_travel - 1.0)
                 if abs(new_travel - travel) < tol:
                     travel = new_travel
                     break
                 travel = new_travel
             # Recompute final position from converged travel so tx/ty/angle are consistent.
-            a = ia + self.angular_velocity * (self.scene_step + travel - 0.5)
+            a = ia + self.angular_velocity * (self.scene_step + travel - 1.0)
             tx, ty = cx + r * math.cos(a), cy + r * math.sin(a)
         angle = math.atan2(ty - sy, tx - sx)
         return angle, tx, ty, travel
@@ -177,7 +181,7 @@ class Hellburner:
         if lines:
             viz.add_text(self.scene_step, 'dest_list:\n' + '\n'.join(lines))
 
-    def simulate_planet_timeline(self, planet: Planet, destination_list: DestinationList) -> tuple[int, float]:
+    def simulate_planet_timeline(self, planet: HPlanet, destination_list: DestinationList) -> tuple[int, float]:
         """Simulate planet ownership/production over time given a list of inbound fleets.
         All arrivals at the same integer turn are resolved simultaneously (highest stack wins).
         Returns (final_owner, final_ships).
@@ -229,7 +233,7 @@ class Hellburner:
 
         return cur_owner, cur_ships
 
-    def evaluate_strategy(self, target: Planet) -> tuple[list[list], bool]:
+    def evaluate_strategy(self, target: HPlanet) -> tuple[list[list], bool]:
         """Find the set of nearby ships needed to attack or reinforce a target.
         Returns (orders, battle_won).
         """
@@ -327,28 +331,17 @@ class Hellburner:
 
         viz.add_text(self.scene_step, '\n'.join(lines))
 
-    def exec_snipe(self, moves: list[Any]) -> None:
-        best_travel = float('inf')
-        best_mine = None
-        best_enemy = None
-        for mine in self.owned_planets:
-            if int(mine.ships) == 0:
+    def commit_attack_orders(self, attack: AttackOrders) -> None:
+        target, _, orders = attack
+
+        for from_id, _, ships in orders:
+            src = next((p for p in self.planets if p.id == from_id), None)
+            if src is None:
                 continue
-            for enemy in self.enemy_planets:
-                _, _, _, travel = self.intercept_planet(mine.x, mine.y, enemy, int(mine.ships))
-                if travel < best_travel:
-                    best_travel = travel
-                    best_mine = mine
-                    best_enemy = enemy
-        if best_mine is None or best_mine.ships < 10:
-            reason = 'no owned planet' if best_mine is None else f'P{best_mine.id} ships={best_mine.ships} < 5'
-            #viz.add_text(self.scene_step, f'snipe: skip ({reason})')
-            return
-        ships = int(best_mine.ships)
-        angle, ix, iy, travel = self.intercept_planet(best_mine.x, best_mine.y, best_enemy, ships)
-        moves.append([best_mine.id, angle, ships])
-        #viz.add_text(self.scene_step, f'snipe: P{best_mine.id}({ships}sh) -> P{best_enemy.id}({best_enemy.ships}sh) angle={angle:.3f} travel={travel:.1f}t')
-        #viz.add_line(self.scene_step, best_mine.x, best_mine.y, ix, iy, color='#ff44ff', width=2)
+            src.ships = max(0, src.ships - ships)
+            _, ix, iy, travel = self.intercept_planet(src.x, src.y, target, ships)
+            self.destination_list.setdefault(target, [])
+            self.destination_list[target].append((self.player, ships, travel, src.x, src.y, ix, iy))
 
     def main(self, obs: dict[str, Any]) -> list[Any]:
         viz.record(obs)
@@ -359,7 +352,7 @@ class Hellburner:
         self.angular_velocity = obs['angular_velocity']
 
         comet_ids = set(obs['comet_planet_ids'])
-        planets_and_comets = [Planet(*p) for p in obs['planets']]
+        planets_and_comets = [HPlanet(*p) for p in obs['planets']]
         self.planets = [p for p in planets_and_comets if p.id not in comet_ids]
         self.owned_planets = [p for p in self.planets if p.owner == self.player]
         self.enemy_planets = [p for p in self.planets if p.owner != self.player]
@@ -372,22 +365,22 @@ class Hellburner:
         self.build_proximity_graph()
         self.build_destination_list()
 
-        attack = self.evaluate_destinations()
+        moves = []
+        while True:
+            attack = self.evaluate_destinations()
+            attack_planet, _, attack_orders = attack
+            if attack_planet is None:
+                break
+            self.viz_orders(attack)
+            self.commit_attack_orders(attack)
+            moves.extend(attack_orders)
 
         elapsed_ms = (time.perf_counter() - _t0) * 1000
         viz.add_text(self.scene_step, f'hellburner ms: {elapsed_ms:.2f}ms')
-        self.viz_orders(attack)
         #self.viz_proximity_graph()
         #self.viz_destination_list()
-
-        moves = []
-        attack_planet, _, attack_orders = attack
-        if attack_planet is not None:
-            moves = attack_orders
-        else:
-            self.exec_snipe(moves)
-
         #viz.add_text(self.scene_step, 'moves: ' + str(moves))
+
         return moves
 
 
@@ -397,5 +390,9 @@ def hellburner(obs: dict[str, Any]) -> list[Any]:
         return _agent.main(obs)
     except Exception:
         import traceback
-        traceback.print_exc()
+        tb = traceback.format_exc()
+        try:
+            viz.add_text(_agent.scene_step, tb)
+        except Exception:
+            pass
         return []

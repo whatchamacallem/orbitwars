@@ -121,8 +121,7 @@ def _build_html(frames):
 <title>Orbit Wars Visualizer</title>
 <style>
   body {{ margin: 0; background: #0a0a12; color: #ccc; font-family: monospace; display: flex; flex-direction: column; align-items: center; }}
-  h1 {{ font-size: 1rem; color: #7af; margin: 8px 0 4px; }}
-  #controls {{ display: flex; align-items: center; gap: 8px; margin: 4px 0; flex-wrap: wrap; justify-content: center; }}
+#controls {{ display: flex; align-items: center; gap: 8px; margin: 4px 0; flex-wrap: wrap; justify-content: center; }}
   button {{ background: #1e2a3a; color: #7af; border: 1px solid #345; padding: 4px 12px; cursor: pointer; border-radius: 3px; }}
   button:hover {{ background: #2a3f55; }}
   #frameLabel {{ color: #fa8; min-width: 80px; text-align: center; }}
@@ -148,7 +147,6 @@ def _build_html(frames):
 </style>
 </head>
 <body>
-<h1>Orbit Wars Visualizer</h1>
 <div id="controls">
   <button id="prevBtn">&#9664; Prev</button>
   <button id="playBtn">&#9654; Play</button>
@@ -202,8 +200,8 @@ function drawFrame(idx) {{
   ctx.clearRect(0, 0, 640, 640);
 
   // Background grid (faint)
-  ctx.strokeStyle = '#111820';
-  ctx.lineWidth = 0.5;
+  ctx.strokeStyle = '#1e2e40';
+  ctx.lineWidth = 0.8;
   for (let i = 0; i <= 10; i++) {{
     ctx.beginPath(); ctx.moveTo(i*64, 0); ctx.lineTo(i*64, 640); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0, i*64); ctx.lineTo(640, i*64); ctx.stroke();
@@ -366,7 +364,7 @@ function go(idx) {{
 
 document.getElementById('prevBtn').onclick = () => {{ stopPlay(); go(current - 1); }};
 document.getElementById('nextBtn').onclick = () => {{ stopPlay(); go(current + 1); }};
-slider.oninput = () => {{ stopPlay(); go(parseInt(slider.value)); }};
+slider.oninput = () => {{ go(parseInt(slider.value)); }};
 
 document.addEventListener('keydown', e => {{
   if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {{ stopPlay(); go(current - 1); }}
@@ -398,6 +396,7 @@ function stopPlay() {{
 }}
 
 playBtn.onclick = togglePlay;
+canvas.onclick = togglePlay;
 
 speedSlider.oninput = () => {{
   const fps = parseInt(speedSlider.value);
