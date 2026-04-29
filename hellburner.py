@@ -6,7 +6,8 @@ from collections import defaultdict
 from typing import Any
 
 from kaggle_environments.envs.orbit_wars.orbit_wars import (
-    Fleet, CENTER, ROTATION_RADIUS_LIMIT, distance, point_to_segment_distance
+    Fleet, CENTER, ROTATION_RADIUS_LIMIT, SUN_RADIUS,
+    distance, point_to_segment_distance
 )
 
 class HPlanet:
@@ -21,8 +22,9 @@ FuturePos = dict[HPlanet, tuple[float, float]]
 ProximityGraph = dict[HPlanet, list[tuple['HPlanet', float]]]
 # HPlanet -> [(owner, ships, travel_time, src_x, src_y, arrival_x, arrival_y)]
 DestinationList = dict[HPlanet, list[tuple[int, float, float, float, float, float, float]]]
-# (planet, value, orders)
-AttackOrders = tuple[HPlanet | None, int, list[list]]
+# (target planet, heuristic value, fleet orders, intercepts)
+# intercepts is parallel to fleet_orders: list of (ix, iy, travel) pre-computed at plan time
+MoveOrders = tuple[HPlanet | None, int, list[list], list[tuple]]
 
 sys.path.insert(0, '/home/t/orbitwars')
 from visualizer import Visualizer
@@ -33,8 +35,7 @@ def viz_save():
 
 MAX_DISTANCE = 30
 LOOK_AHEAD = 15
-SHIP_SPEED_MAX = 6.0
-SUN_RADIUS = 10
+SHIP_SPEED_MAX = 6.0  # matches configuration.shipSpeed default
 
 def fleet_speed(ships: int | float) -> float:
     """Mirror the engine's speed formula exactly."""
@@ -80,18 +81,25 @@ class Hellburner:
 
         future_pos stores each planet's current position (source frame).
         intercept_pos stores each planet's arrival position given a shot from the center
-        (used only for visualization; actual intercepts are computed per-src in evaluate_strategy).
+        (used only for visualization; actual intercepts are computed per-src in evaluate_frontline_strategy).
         """
+        cx = cy = CENTER
         self.future_pos = {}
         for p in self.planets:
-            self.future_pos[p] = (p.x, p.y)
+            orb = self.orbital_info[p]
+            if orb is not None:
+                r, ia = orb
+                a = ia + self.angular_velocity * (self.scene_step + 1 + LOOK_AHEAD)
+                self.future_pos[p] = (cx + r * math.cos(a), cy + r * math.sin(a))
+            else:
+                self.future_pos[p] = (p.x, p.y)
 
         self.inbound_edges = {p: [] for p in self.planets}
         for src in self.planets:
             for dst in self.planets:
                 if dst is src:
                     continue
-                _, _, _, travel = self.intercept_planet(src.x, src.y, dst, 1)
+                travel = distance((src.x, src.y), self.future_pos[dst])
                 if travel <= MAX_DISTANCE:
                     self.inbound_edges[dst].append((src, travel))
 
@@ -201,11 +209,11 @@ class Hellburner:
             # Seed: straight-line travel time to the planet's current position.
             travel = distance((sx, sy), (target.x, target.y)) / speed
             for _ in range(max_iters):
-                a = ia + self.angular_velocity * (self.scene_step + travel - 1.0)
+                a = ia + self.angular_velocity * (self.scene_step + travel - 0.5)
                 new_tx, new_ty = cx + r * math.cos(a), cy + r * math.sin(a)
                 new_travel = distance((sx, sy), (new_tx, new_ty)) / speed
                 # Damp update: average old and new travel to suppress oscillation.
-                new_travel = 0.5 * (travel + new_travel - 1.0)
+                new_travel = 0.5 * (travel + new_travel - 0.5)
                 if abs(new_travel - travel) < tol:
                     travel = new_travel
                     break
@@ -214,7 +222,7 @@ class Hellburner:
                 # Diverged: fleet too slow to catch this planet's orbital speed.
                 return 0.0, target.x, target.y, math.inf
             # Recompute final position from converged travel so tx/ty/angle are consistent.
-            a = ia + self.angular_velocity * (self.scene_step + travel - 1.0)
+            a = ia + self.angular_velocity * (self.scene_step + travel - 0.5)
             tx, ty = cx + r * math.cos(a), cy + r * math.sin(a)
         angle = math.atan2(ty - sy, tx - sx)
         return angle, tx, ty, travel
@@ -351,15 +359,17 @@ class Hellburner:
 
         return cur_owner, excess_ships
 
-    def evaluate_strategy(self, target: HPlanet) -> tuple[list[list], bool]:
+    def evaluate_frontline_strategy(self, target: HPlanet) -> tuple[list[list], list[tuple], bool]:
         """Find the set of nearby ships needed to attack or reinforce a target.
-        Returns (orders, battle_won).
+        Returns (fleet_orders, intercepts, battle_won).
+        intercepts is parallel to fleet_orders: list of (ix, iy, travel) pre-computed at plan time.
         """
         possible_origins = sorted(
             [(src, travel) for src, travel in self.inbound_edges.get(target, [])
                 if src.owner == self.player], key=lambda x: x[1])
 
-        orders: list[list] = []
+        fleet_orders: list[list] = []
+        intercepts: list[tuple] = []
         trial_destination_list = {k: list(v) for k, v in self.destination_list.items()}
         trial_destination_list.setdefault(target, [])
         battle_won = False
@@ -373,22 +383,24 @@ class Hellburner:
                 continue
 
             trial_destination_list[target].append((self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy))
-            orders.append([neighbor.id, angle, ships_to_send])
+            fleet_orders.append([neighbor.id, angle, ships_to_send])
+            intercepts.append((ix, iy, travel))
             trial_end_owner, excess_ships = self.simulate_planet_timeline(target, trial_destination_list)
             if trial_end_owner == self.player:
                 keep = int(excess_ships // 2)
                 ships_to_send = max(1, ships_to_send - keep)
                 angle, ix, iy, travel = self.intercept_planet(neighbor.x, neighbor.y, target, ships_to_send)
                 trial_destination_list[target][-1] = (self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy)
-                orders[-1] = [neighbor.id, angle, ships_to_send]
+                fleet_orders[-1] = [neighbor.id, angle, ships_to_send]
+                intercepts[-1] = (ix, iy, travel)
                 battle_won = True
                 break
 
-        return orders, battle_won
+        return fleet_orders, intercepts, battle_won
 
-    def evaluate_destinations(self) -> AttackOrders:
+    def evaluate_move_orders(self) -> MoveOrders:
         """Score every reachable planet and pick the best destination."""
-        best_attack_orders: AttackOrders = (None, -65535, [])
+        best_move_orders: MoveOrders = (None, -65535, [], [])
 
         for target in self.planets:
             if not bool(self.inbound_edges.get(target)):
@@ -404,16 +416,16 @@ class Hellburner:
                 if not threatened:
                     continue
 
-                orders, battle_won = self.evaluate_strategy(target)
+                fleet_orders, intercepts, battle_won = self.evaluate_frontline_strategy(target)
 
                 if not battle_won:
                     continue  # can't save it; skip for now
 
                 value = target.production
-                _, best_value, best_orders = best_attack_orders
+                _, best_value, best_orders, _ = best_move_orders
                 if (value > best_value or
-                        (value == best_value and len(orders) < len(best_orders))):
-                    best_attack_orders = (target, value, orders)
+                        (value == best_value and len(fleet_orders) < len(best_orders))):
+                    best_move_orders = (target, value, fleet_orders, intercepts)
 
             # not owned
             else:
@@ -421,7 +433,7 @@ class Hellburner:
                 if end_owner == self.player:
                     continue  # already won by in-flight fleets
 
-                orders, battle_won = self.evaluate_strategy(target)
+                fleet_orders, intercepts, battle_won = self.evaluate_frontline_strategy(target)
 
                 if not battle_won:
                     continue
@@ -430,41 +442,39 @@ class Hellburner:
                 if (target.owner == -1):
                     value = value - 1
 
-                _, best_value, best_orders = best_attack_orders
+                _, best_value, best_orders, _ = best_move_orders
                 if (value > best_value or
-                        (value == best_value and len(orders) < len(best_orders))):
-                    best_attack_orders = (target, value, orders)
+                        (value == best_value and len(fleet_orders) < len(best_orders))):
+                    best_move_orders = (target, value, fleet_orders, intercepts)
 
-        return best_attack_orders
+        return best_move_orders
 
-    def viz_orders(self, best: AttackOrders) -> None:
-        """Visualize evaluate_destinations result: target ring, order arrows, text summary."""
-        attack_planet, attack_value, attack_orders = best
-        if attack_planet is None or not attack_orders:
+    def viz_orders(self, best: MoveOrders) -> None:
+        """Visualize evaluate_move_orders result: target ring, order arrows, text summary."""
+        target_planet, attack_value, fleet_orders, intercepts = best
+        if target_planet is None:
             return
 
         planet_by_id = {p.id: p for p in self.planets}
-        viz.add_label(self.scene_step, attack_planet.x, attack_planet.y,
-                           f'P{attack_planet.id} val={attack_value}', color='#ffff44')
+        viz.add_label(self.scene_step, target_planet.x, target_planet.y,
+                           f'P{target_planet.id} val={attack_value}', color='#ffff44')
 
-        lines = [f'orders -> P{attack_planet.id} (val={attack_value}):']
-        for from_id, angle, ships in attack_orders:
+        lines = [f'orders -> P{target_planet.id} (val={attack_value}):']
+        for (from_id, angle, ships), (ix, iy, travel) in zip(fleet_orders, intercepts):
             src = planet_by_id[from_id]
-            _, ix, iy, travel = self.intercept_planet(src.x, src.y, attack_planet, ships)
             viz.add_line(self.scene_step, src.x, src.y, ix, iy, color='#ffff44', width=2)
             lines.append(f'  P{from_id}({src.ships}sh) -> {int(ships)}sh angle={angle:.3f} t={travel:.1f}')
 
         viz.add_text(self.scene_step, '\n'.join(lines))
 
-    def commit_attack_orders(self, attack: AttackOrders) -> None:
-        target, _, orders = attack
+    def commit_move_orders(self, move: MoveOrders) -> None:
+        target, _, fleet_orders, intercepts = move
 
-        for from_id, _, ships in orders:
+        for (from_id, _, ships), (ix, iy, travel) in zip(fleet_orders, intercepts):
             src = next((p for p in self.planets if p.id == from_id), None)
             if src is None:
                 continue
             src.ships = max(0, src.ships - ships)
-            _, ix, iy, travel = self.intercept_planet(src.x, src.y, target, ships)
             self.destination_list.setdefault(target, [])
             self.destination_list[target].append((self.player, ships, travel, src.x, src.y, ix, iy))
 
@@ -492,13 +502,13 @@ class Hellburner:
 
         moves = []
         while True:
-            attack = self.evaluate_destinations()
-            attack_planet, _, attack_orders = attack
-            if attack_planet is None:
+            move_orders = self.evaluate_move_orders()
+            target_planet, _, fleet_orders, _ = move_orders
+            if target_planet is None:
                 break
-            #self.viz_orders(attack)
-            self.commit_attack_orders(attack)
-            moves.extend(attack_orders)
+            #self.viz_orders(move_orders)
+            self.commit_move_orders(move_orders)
+            moves.extend(fleet_orders)
 
         elapsed_ms = (time.perf_counter() - _t0) * 1000
         viz.add_text(self.scene_step, f'hellburner ms: {elapsed_ms:.2f}ms')
