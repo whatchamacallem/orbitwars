@@ -32,7 +32,6 @@ def viz_save():
 MAX_DISTANCE = 30
 LOOK_AHEAD = 15
 SHIP_SPEED_MAX = 6.0
-EVAL_HORIZON = 40
 
 def fleet_speed(ships: int | float) -> float:
     """Mirror the engine's speed formula exactly."""
@@ -264,13 +263,17 @@ class Hellburner:
             if neighbor.ships == 0:
                 continue
             ships_to_send = int(neighbor.ships)
-            angle, ix, iy, travel = self.intercept_planet(
-                neighbor.x, neighbor.y, target, ships_to_send)
+            angle, ix, iy, travel = self.intercept_planet(neighbor.x, neighbor.y, target, ships_to_send)
 
             trial_destination_list[target].append((self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy))
             orders.append([neighbor.id, angle, ships_to_send])
-            trial_end_owner, _ = self.simulate_planet_timeline(target, trial_destination_list)
+            trial_end_owner, excess_ships = self.simulate_planet_timeline(target, trial_destination_list)
             if trial_end_owner == self.player:
+                keep = int(excess_ships // 2)
+                ships_to_send = max(1, ships_to_send - keep)
+                angle, ix, iy, travel = self.intercept_planet(neighbor.x, neighbor.y, target, ships_to_send)
+                trial_destination_list[target][-1] = (self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy)
+                orders[-1] = [neighbor.id, angle, ships_to_send]
                 battle_won = True
                 break
 
