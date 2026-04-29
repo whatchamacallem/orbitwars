@@ -32,6 +32,7 @@ def viz_save():
 MAX_DISTANCE = 30
 LOOK_AHEAD = 15
 SHIP_SPEED_MAX = 6.0
+SUN_RADIUS = 10
 
 def fleet_speed(ships: int | float) -> float:
     """Mirror the engine's speed formula exactly."""
@@ -142,7 +143,8 @@ class Hellburner:
         return angle, tx, ty, travel
 
     def first_planet_hit(self, sx: float, sy: float, angle: float, ships: int | float, source: HPlanet) -> HPlanet | None:
-        """Return the first planet a fleet launched from (sx, sy) at `angle` would hit, or None."""
+        """Return the first planet a fleet launched from (sx, sy) at `angle` would hit, or None.
+        Returns None if the path crosses the sun before any planet is hit."""
         best = None
         best_t = float('inf')
         for planet in self.planets:
@@ -158,6 +160,12 @@ class Hellburner:
             if delta <= half_cone and travel < best_t:
                 best_t = travel
                 best = planet
+        if best is None:
+            return None
+        # Check if the sun blocks the path to the first planet hit.
+        ex, ey = sx + best_t * fleet_speed(ships) * math.cos(angle), sy + best_t * fleet_speed(ships) * math.sin(angle)
+        if point_to_segment_distance((CENTER, CENTER), (sx, sy), (ex, ey)) <= SUN_RADIUS:
+            return None
         return best
 
     def build_destination_list(self) -> None:
