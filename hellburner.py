@@ -1,4 +1,3 @@
-import heapq
 import math
 import time
 import sys
@@ -16,15 +15,21 @@ class HPlanet:
         self.radius = radius; self.ships = ships; self.production = production
         self.reinforcement_target: 'HPlanet | None' = None  # nearest owned planet on shortest path to front
 
+# HPlanet -> (orbital_radius, initial_angle) if the planet orbits the sun, else None
 OrbitalInfo = dict[HPlanet, tuple[float, float] | None]
+# HPlanets rotated by LOOK_AHEAD
 FuturePos = dict[HPlanet, tuple[float, float]]
 # dst -> [(src, travel_steps)]: directed graph; src departs now, dst is its intercept position
-ProximityGraph = dict[HPlanet, list[tuple['HPlanet', float]]]
+ProximityGraph = dict[HPlanet, list[tuple[HPlanet, float]]]
 # HPlanet -> [(owner, ships, travel_time, src_x, src_y, arrival_x, arrival_y)]
 DestinationList = dict[HPlanet, list[tuple[int, float, float, float, float, float, float]]]
+# [planet_id, angle, ships]
+FleetOrders = list[list]
+# (intercept_x, intercept_y, travel_steps)
+Intercept = tuple[float, float, float]
 # (target planet, heuristic value, fleet orders, intercepts)
 # intercepts is parallel to fleet_orders: list of (ix, iy, travel) pre-computed at plan time
-MoveOrders = tuple[HPlanet | None, int, list[list], list[tuple]]
+MoveOrders = tuple[HPlanet | None, int, FleetOrders, list[Intercept]]
 
 sys.path.insert(0, '/home/t/orbitwars')
 from visualizer import Visualizer
@@ -33,8 +38,8 @@ def viz_save():
     viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html')
 
 
-MAX_DISTANCE = 30
-LOOK_AHEAD = 15
+MAX_DISTANCE = 35
+LOOK_AHEAD = 10
 SHIP_SPEED_MAX = 6.0  # matches configuration.shipSpeed default
 
 def fleet_speed(ships: int | float) -> float:
@@ -109,48 +114,47 @@ class Hellburner:
             for src, travel in inbound:
                 self.outbound_edges[src].append((dst, travel))
 
-        # front-line: owned planets that have at least one enemy/neutral inbound or outbound edge
+    def build_reinforcement_targets(self) -> None:
         front_line = {
             p for p in self.owned_planets
             if any(src.owner != self.player for src, _ in self.inbound_edges[p])
             or any(dst.owner != self.player for dst, _ in self.outbound_edges[p])
         }
 
+        # BFS hop-distance from every owned node to nearest frontline planet,
+        # traversing only owned-planet edges (frontline nodes are sinks, not sources).
+        hops_to_front: dict[HPlanet, int] = {p: 0 for p in front_line}
+        queue: list[HPlanet] = list(front_line)
+        head = 0
+        while head < len(queue):
+            node = queue[head]; head += 1
+            for src, _ in self.inbound_edges[node]:
+                if src.owner != self.player or src in hops_to_front:
+                    continue
+                hops_to_front[src] = hops_to_front[node] + 1
+                queue.append(src)
+
         for p in self.owned_planets:
             p.reinforcement_target = None
             if p in front_line:
-                continue  # only rear planets get a reinforcement target
-            # Dijkstra through owned-planet subgraph to nearest front-line planet.
-            dist: dict[HPlanet, float] = {p: 0.0}
-            prev: dict[HPlanet, HPlanet | None] = {p: None}
-            heap: list[tuple[float, int, HPlanet]] = [(0.0, id(p), p)]
-            heapq.heapify(heap)
-            found_front: HPlanet | None = None
-            while heap:
-                d, _, node = heapq.heappop(heap)
-                if d > dist.get(node, float('inf')):
-                    continue
-                if node in front_line:
-                    found_front = node
-                    break
-                for dst, travel in self.outbound_edges[node]:
-                    if dst.owner != self.player:
-                        continue  # stay within owned subgraph
-                    nd = d + travel
-                    if nd < dist.get(dst, float('inf')):
-                        dist[dst] = nd
-                        prev[dst] = node
-                        heapq.heappush(heap, (nd, id(dst), dst))
-            if found_front is None:
                 continue
-            # Walk back to the first hop after p
-            node = found_front
-            while prev.get(node) is not p:
-                node = prev[node]  # type: ignore[assignment]
-                if node is None:
-                    break
-            if node is not None and node is not p and node.owner == self.player:
-                p.reinforcement_target = node
+
+            direct_front = [
+                dst for dst, _ in self.outbound_edges[p]
+                if dst in front_line
+            ]
+            if direct_front:
+                p.reinforcement_target = min(direct_front, key=lambda d: d.ships)
+                continue
+
+            # No direct edge to a frontline planet: pick the direct neighbor with
+            # fewest hops to the front, breaking ties by fewest ships at destination.
+            reachable = [
+                dst for dst, _ in self.outbound_edges[p]
+                if dst.owner == self.player and dst not in front_line and dst in hops_to_front
+            ]
+            if reachable:
+                p.reinforcement_target = min(reachable, key=lambda d: (hops_to_front[d], d.ships))
 
     @staticmethod
     def viz_arrow_endpoints(
@@ -173,6 +177,8 @@ class Hellburner:
 
         on_screen: list[str] = []
         for p in sorted(self.planets, key=lambda p: p.id):
+            if p.owner == -1:
+                continue
             neighbors = edge_map.get(p, [])
             if not neighbors:
                 continue
@@ -181,12 +187,13 @@ class Hellburner:
             for neighbor, t in neighbors:
                 tx, ty = self.future_pos[neighbor]
                 sx, sy, ex, ey = self.viz_arrow_endpoints(px, py, tx, ty, p.radius, neighbor.radius)
-                viz.add_arrow(self.scene_step, sx, sy, ex, ey, color='#22aaff', width=1, length_frac=1.0, head_size=5)
+                color = '#ff8844' if p.owner == 1 else '#22aaff'
+                viz.add_arrow(self.scene_step, sx, sy, ex, ey, color=color, width=1, length_frac=1.0, head_size=5)
                 neighbor_strs.append(f'P{neighbor.id}({t:.0f})')
             on_screen.append(f'  P{p.id}: [{", ".join(neighbor_strs)}]')
 
         edge_count = sum(len(v) for v in edge_map.values())
-        header = f'{direction}_edges: {len(self.planets)} planets, {edge_count} directed edges'
+        header = f'{direction}_edges:'
         viz.add_text(self.scene_step, header + '\n' + '\n'.join(on_screen))
 
     def viz_reinforcement_targets(self) -> None:
@@ -198,7 +205,7 @@ class Hellburner:
             px, py = p.x, p.y
             tx, ty = p.reinforcement_target.x, p.reinforcement_target.y
             sx, sy, ex, ey = self.viz_arrow_endpoints(px, py, tx, ty, p.radius, p.reinforcement_target.radius)
-            viz.add_arrow(self.scene_step, sx, sy, ex, ey, color='#22aaff', width=1, length_frac=1.0, head_size=5)
+            viz.add_arrow(self.scene_step, sx, sy, ex, ey, color='#44ff88', width=1, length_frac=1.0, head_size=5)
             lines.append(f'  P{p.id} -> P{p.reinforcement_target.id}')
 
         if lines:
@@ -375,7 +382,7 @@ class Hellburner:
 
         return cur_owner, excess_ships
 
-    def evaluate_frontline_strategy(self, target: HPlanet) -> tuple[list[list], list[tuple], bool]:
+    def evaluate_frontline_strategy(self, target: HPlanet) -> tuple[FleetOrders, list[Intercept], bool]:
         """Find the set of nearby ships needed to attack or reinforce a target.
         Returns (fleet_orders, intercepts, battle_won).
         intercepts is parallel to fleet_orders: list of (ix, iy, travel) pre-computed at plan time.
@@ -384,8 +391,8 @@ class Hellburner:
             [(src, travel) for src, travel in self.inbound_edges.get(target, [])
                 if src.owner == self.player], key=lambda x: x[1])
 
-        fleet_orders: list[list] = []
-        intercepts: list[tuple] = []
+        fleet_orders: FleetOrders = []
+        intercepts: list[Intercept] = []
         trial_destination_list = {k: list(v) for k, v in self.destination_list.items()}
         trial_destination_list.setdefault(target, [])
         battle_won = False
@@ -393,6 +400,16 @@ class Hellburner:
             if neighbor.ships == 0:
                 continue
             ships_to_send = int(neighbor.ships)
+
+            # don't abandon a planet with incoming enemies unless it is lost anyway.
+            baseline_owner, _ = self.simulate_planet_timeline(neighbor, self.destination_list)
+            if baseline_owner == self.player:
+                neighbor.ships = 0
+                after_owner, _ = self.simulate_planet_timeline(neighbor, self.destination_list)
+                neighbor.ships = ships_to_send
+                if after_owner != self.player:
+                    continue
+
             angle, ix, iy, travel = self.intercept_planet(neighbor.x, neighbor.y, target, ships_to_send)
 
             if not math.isfinite(travel):
@@ -423,7 +440,7 @@ class Hellburner:
         """Score every reachable planet and pick the best destination."""
         best_move_orders: MoveOrders = (None, -65535, [], [])
 
-        for target in self.planets:
+        for target in sorted(self.planets, key=lambda p: p.ships, reverse=True):
             if not bool(self.inbound_edges.get(target)):
                 continue # effectively unreachable
 
@@ -469,6 +486,32 @@ class Hellburner:
                     best_move_orders = (target, value, fleet_orders, intercepts)
 
         return best_move_orders
+
+    def send_reinforcements_orders(self) -> FleetOrders:
+        """Send all ships from rear planets to their reinforcement_target if safe to do so."""
+        orders: FleetOrders = []
+        for p in self.owned_planets:
+            if p.reinforcement_target is None:
+                continue
+            if p.ships < 10:
+                continue
+            has_enemy_incoming = any(
+                src.owner != self.player
+                for src, _ in self.inbound_edges.get(p, []) )
+            if has_enemy_incoming:
+                continue
+            target = p.reinforcement_target
+            angle, ix, iy, travel = self.intercept_planet(p.x, p.y, target, p.ships)
+            if not math.isfinite(travel):
+                continue
+            # allow sending by an intermediate planet:
+            #if self.first_planet_hit(p.x, p.y, angle, p.ships, p) is not target:
+            #    continue
+            orders.append([p.id, angle, int(p.ships)])
+            self.destination_list.setdefault(target, [])
+            self.destination_list[target].append((self.player, p.ships, travel, p.x, p.y, ix, iy))
+            p.ships = 0
+        return orders
 
     def viz_orders(self, best: MoveOrders) -> None:
         """Visualize evaluate_move_orders result: target ring, order arrows, text summary."""
@@ -519,6 +562,7 @@ class Hellburner:
 
         self.build_orbital_info(obs.get('initial_planets', []))
         self.build_proximity_graph()
+        self.build_reinforcement_targets()
         self.build_destination_list()
 
         moves = []
@@ -530,6 +574,10 @@ class Hellburner:
             #self.viz_orders(move_orders)
             self.commit_move_orders(move_orders)
             moves.extend(fleet_orders)
+
+        reinforcement_orders = self.send_reinforcements_orders()
+        if reinforcement_orders:
+            moves.extend(reinforcement_orders)
 
         elapsed_ms = (time.perf_counter() - _t0) * 1000
         viz.add_text(self.scene_step, f'hellburner ms: {elapsed_ms:.2f}ms')

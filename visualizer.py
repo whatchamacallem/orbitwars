@@ -163,13 +163,13 @@ def _build_html(frames):
   <button id="nextBtn">Next &#9654;</button>
   <span id="frameLabel">Frame 0</span>
   <input type="range" id="slider" min="0" value="0">
-  <label>Speed: <input type="range" id="speedSlider" min="1" max="30" value="8" style="width:80px">
-    <span id="speedLabel">8 fps</span></label>
+  <label>Speed: <input type="range" id="speedSlider" min="1" max="30" value="4" style="width:80px">
+    <span id="speedLabel">4 fps</span></label>
 </div>
 <div id="main">
   <canvas id="canvas" width="640" height="640"></canvas>
   <div id="sidebar">
-    <div class="panel" id="metaPanel"><h3>Status</h3><div id="metaContent"></div></div>
+    <div class="panel" id="metaPanel"><h3>Status (⯇⯈ step, ⯅⯆ speed)</h3><div id="metaContent"></div></div>
     <div class="panel" id="textPanel" style="display:none"><h3>Debug Text</h3><pre id="debugText"></pre></div>
     <div class="panel"><h3>Planets</h3><div id="planetContent"></div></div>
     <div class="panel"><h3>Fleets</h3><div id="fleetContent"></div></div>
@@ -254,17 +254,6 @@ function drawFrame(idx) {{
     ctx.lineWidth = isComet ? 1.5 : (owner >= 0 ? 1.5 : 0.8);
     ctx.stroke();
 
-    // Ship count label
-    ctx.fillStyle = '#fff';
-    ctx.font = `bold ${{Math.max(9, cr*0.9)}}px monospace`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(ships, cx, cy);
-
-    // ID label (small, above)
-    ctx.fillStyle = '#aaa';
-    ctx.font = '13px monospace';
-    ctx.fillText('P' + id, cx, cy - cr - 5);
   }}
 
   // Fleets
@@ -294,14 +283,12 @@ function drawFrame(idx) {{
     ctx.closePath();
     ctx.fill();
 
-    // Ship count (for larger fleets)
-    if (ships >= 5) {{
-      ctx.fillStyle = '#fff';
-      ctx.font = '13px monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(ships, fx + px*9, fy + py*9);
-    }}
+    // Ship count
+    ctx.fillStyle = '#fff';
+    ctx.font = '13px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(ships, fx + px*9, fy + py*9);
   }}
 
   // Debug overlay lines / arrows
@@ -323,8 +310,8 @@ function drawFrame(idx) {{
       ctx.fillStyle = col;
       ctx.beginPath();
       ctx.moveTo(ex, ey);
-      ctx.lineTo(ex - ux*hs + px*(hs*0.5), ey - uy*hs + py*(hs*0.5));
-      ctx.lineTo(ex - ux*hs - px*(hs*0.5), ey - uy*hs - py*(hs*0.5));
+      ctx.lineTo(ex - ux*hs*2 + px*hs, ey - uy*hs*2 + py*hs);
+      ctx.lineTo(ex - ux*hs*2 - px*hs, ey - uy*hs*2 - py*hs);
       ctx.closePath(); ctx.fill();
     }} else {{
       ctx.beginPath();
@@ -332,6 +319,20 @@ function drawFrame(idx) {{
       ctx.strokeStyle = col; ctx.lineWidth = lw;
       ctx.stroke();
     }}
+  }}
+
+  // Planet ship counts and ID labels on top of everything
+  for (const p of planets) {{
+    const [id, owner, x, y, radius, ships] = p;
+    const cx = tx(x), cy = ty(y), cr = tr(radius);
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${{Math.max(9, cr*0.9)}}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(ships, cx, cy);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '13px monospace';
+    ctx.fillText('P' + id, cx, cy - cr - 5);
   }}
 
   // Canvas labels (e.g. future-position planet markers)
@@ -397,8 +398,10 @@ document.getElementById('nextBtn').onclick = () => {{ stopPlay(); go(current + 1
 slider.oninput = () => {{ go(parseInt(slider.value)); }};
 
 document.addEventListener('keydown', e => {{
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {{ stopPlay(); go(current - 1); }}
-  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {{ stopPlay(); go(current + 1); }};
+  if (e.key === 'ArrowLeft') {{ stopPlay(); go(current - 1); }}
+  if (e.key === 'ArrowRight') {{ stopPlay(); go(current + 1); }}
+  if (e.key === 'ArrowUp') {{ e.preventDefault(); speedSlider.value = Math.min(30, parseInt(speedSlider.value) + 1); speedSlider.dispatchEvent(new Event('input')); }}
+  if (e.key === 'ArrowDown') {{ e.preventDefault(); speedSlider.value = Math.max(1, parseInt(speedSlider.value) - 1); speedSlider.dispatchEvent(new Event('input')); }}
   if (e.key === ' ') {{ e.preventDefault(); togglePlay(); }}
 }});
 
