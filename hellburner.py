@@ -141,6 +141,25 @@ class Hellburner:
         angle = math.atan2(ty - sy, tx - sx)
         return angle, tx, ty, travel
 
+    def first_planet_hit(self, sx: float, sy: float, angle: float, ships: int | float, source: HPlanet) -> HPlanet | None:
+        """Return the first planet a fleet launched from (sx, sy) at `angle` would hit, or None."""
+        best = None
+        best_t = float('inf')
+        for planet in self.planets:
+            if planet is source:
+                continue
+            needed_angle, px, py, travel = self.intercept_planet(sx, sy, planet, ships)
+            dist = distance((sx, sy), (px, py))
+            if dist < planet.radius:
+                half_cone = math.pi
+            else:
+                half_cone = math.asin(min(1.0, planet.radius / dist))
+            delta = abs(math.atan2(math.sin(angle - needed_angle), math.cos(angle - needed_angle)))
+            if delta <= half_cone and travel < best_t:
+                best_t = travel
+                best = planet
+        return best
+
     def build_destination_list(self) -> None:
         """For each fleet, find the first planet it is on an interception course for.
         Populates self.destination_list: Planet -> list of (owner, ships, t, src_x, src_y, arrival_x, arrival_y).
@@ -264,6 +283,9 @@ class Hellburner:
                 continue
             ships_to_send = int(neighbor.ships)
             angle, ix, iy, travel = self.intercept_planet(neighbor.x, neighbor.y, target, ships_to_send)
+
+            if self.first_planet_hit(neighbor.x, neighbor.y, angle, ships_to_send, neighbor) is not target:
+                continue
 
             trial_destination_list[target].append((self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy))
             orders.append([neighbor.id, angle, ships_to_send])
