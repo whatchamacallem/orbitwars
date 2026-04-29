@@ -15,6 +15,7 @@ class HPlanet:
 
 OrbitalInfo = dict[HPlanet, tuple[float, float] | None]
 FuturePos = dict[HPlanet, tuple[float, float]]
+# dst -> [(src, travel_steps)]: directed graph; src departs now, dst is its intercept position
 ProximityGraph = dict[HPlanet, list[tuple['HPlanet', float]]]
 # HPlanet -> [(owner, ships, travel_time, src_x, src_y, arrival_x, arrival_y)]
 DestinationList = dict[HPlanet, list[tuple[int, float, float, float, float, float, float]]]
@@ -67,31 +68,29 @@ class Hellburner:
                 self.orbital_info[p] = None
 
     def build_proximity_graph(self) -> None:
-        """Build adjacency list: planet -> list of (neighbor, dist) within MAX_DISTANCE.
+        """Build directed adjacency list: dst -> [(src, travel_steps)].
 
-        scene_step is the rotation index the planets are currently at (= obs.step - 1).
-        Orbiting planets are projected LOOK_AHEAD turns into the future.
+        Directed because:
+        - src departs from its current position immediately
+        - dst is rotated into the future to its intercept position
+        So travel from A->B and B->A may differ and one direction may exceed MAX_DISTANCE.
+
+        future_pos stores each planet's current position (source frame).
+        intercept_pos stores each planet's arrival position given a shot from the center
+        (used only for visualization; actual intercepts are computed per-src in evaluate_strategy).
         """
-        cx = cy = CENTER
         self.future_pos = {}
         for p in self.planets:
-            orb = self.orbital_info[p]
-            if orb is not None:
-                r, ia = orb
-                a = ia + self.angular_velocity * (self.scene_step + 1 + LOOK_AHEAD)
-                self.future_pos[p] = (cx + r * math.cos(a), cy + r * math.sin(a))
-            else:
-                self.future_pos[p] = (p.x, p.y)
+            self.future_pos[p] = (p.x, p.y)
 
         self.proximity_graph = {p: [] for p in self.planets}
-        for i, a in enumerate(self.planets):
-            ax, ay = self.future_pos[a]
-            for b in self.planets[i + 1:]:
-                bx, by = self.future_pos[b]
-                dist = distance((ax, ay), (bx, by))
-                if dist <= MAX_DISTANCE:
-                    self.proximity_graph[a].append((b, dist))
-                    self.proximity_graph[b].append((a, dist))
+        for src in self.planets:
+            for dst in self.planets:
+                if dst is src:
+                    continue
+                _, _, _, travel = self.intercept_planet(src.x, src.y, dst, 1)
+                if travel <= MAX_DISTANCE:
+                    self.proximity_graph[dst].append((src, travel))
 
     def viz_proximity_graph(self) -> None:
         """Draw proximity_graph edges and future-position planet labels onto the visualizer frame."""
@@ -184,18 +183,26 @@ class Hellburner:
     def simulate_planet_timeline(self, planet: HPlanet, destination_list: DestinationList) -> tuple[int, float]:
         """Simulate planet ownership/production over time given a list of inbound fleets.
         All arrivals at the same integer turn are resolved simultaneously (highest stack wins).
-        Returns (final_owner, final_ships).
+        Returns (final_owner, excess_ships) where excess_ships is the surplus in the last entry in destination_list.
         """
-        buckets = defaultdict(list)
-        for owner, ships, t, _, _, _, _ in destination_list.get(planet, []):
-            turn = max(1, math.ceil(t))
-            if turn <= EVAL_HORIZON:
-                buckets[turn].append((owner, ships))
-
         cur_owner = planet.owner
+        entries = destination_list.get(planet)
+        if not bool(entries):
+            return cur_owner, 0
+
+        buckets = defaultdict(list)
+        for owner, ships, t, _, _, _, _ in entries:
+            turn = max(1, math.ceil(t))
+            buckets[turn].append((owner, ships))
+
+        last_ships, last_t = entries[-1][1], entries[-1][2]
+        last_turn = max(1, math.ceil(last_t))
+
         cur_ships = float(planet.ships)
         prod = planet.production
         cur_t = 0
+        # minimum margin by which the player survived each fight after the last entry landed
+        excess_ships = float('inf')
 
         for turn in sorted(buckets):
             elapsed = turn - cur_t
@@ -206,7 +213,6 @@ class Hellburner:
                     cur_ships += prod * elapsed
             cur_t = turn
 
-            # Step 1: sum arriving fleet ships per owner (garrison is NOT in this pool)
             owner_ships = defaultdict(float)
             for owner, ships in buckets[turn]:
                 owner_ships[owner] += ships
@@ -221,7 +227,6 @@ class Hellburner:
                     survivor_ships = top_ships - second_ships
                     survivor_owner = top_owner if survivor_ships > 0 else -1
 
-                # Step 3: survivor fights garrison (or reinforces if same owner)
                 if survivor_ships > 0:
                     if survivor_owner == cur_owner:
                         cur_ships += survivor_ships
@@ -231,7 +236,17 @@ class Hellburner:
                             cur_owner = survivor_owner
                             cur_ships = abs(cur_ships)
 
-        return cur_owner, cur_ships
+            if turn >= last_turn:
+                # track the narrowest margin by which we stayed in control
+                margin = cur_ships if cur_owner == self.player else 0.0
+                excess_ships = min(excess_ships, margin)
+
+        if excess_ships == float('inf'):
+            excess_ships = 0.0
+        # excess can't exceed what the last entry actually sent
+        excess_ships = min(excess_ships, last_ships)
+
+        return cur_owner, excess_ships
 
     def evaluate_strategy(self, target: HPlanet) -> tuple[list[list], bool]:
         """Find the set of nearby ships needed to attack or reinforce a target.
