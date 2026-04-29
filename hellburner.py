@@ -1,3 +1,4 @@
+import heapq
 import math
 import time
 import sys
@@ -12,6 +13,7 @@ class HPlanet:
     def __init__(self, id, owner, x, y, radius, ships, production):
         self.id = id; self.owner = owner; self.x = x; self.y = y
         self.radius = radius; self.ships = ships; self.production = production
+        self.reinforcement_target: 'HPlanet | None' = None  # nearest owned planet on shortest path to front
 
 OrbitalInfo = dict[HPlanet, tuple[float, float] | None]
 FuturePos = dict[HPlanet, tuple[float, float]]
@@ -50,7 +52,8 @@ class Hellburner:
         self.enemy_planets: list[HPlanet] = []
         self.fleets: list[Fleet] = []
         self.orbital_info: OrbitalInfo = {}
-        self.proximity_graph: ProximityGraph = {}
+        self.inbound_edges: ProximityGraph = {}
+        self.outbound_edges: ProximityGraph = {}
         self.future_pos: FuturePos = {}
         self.destination_list: DestinationList = {}
 
@@ -83,20 +86,69 @@ class Hellburner:
         for p in self.planets:
             self.future_pos[p] = (p.x, p.y)
 
-        self.proximity_graph = {p: [] for p in self.planets}
+        self.inbound_edges = {p: [] for p in self.planets}
         for src in self.planets:
             for dst in self.planets:
                 if dst is src:
                     continue
                 _, _, _, travel = self.intercept_planet(src.x, src.y, dst, 1)
                 if travel <= MAX_DISTANCE:
-                    self.proximity_graph[dst].append((src, travel))
+                    self.inbound_edges[dst].append((src, travel))
+
+        # self.outbound_edges[p] = [(dst, travel)] — keyed by source, complement of the inbound-keyed inbound_edges.
+        self.outbound_edges = {p: [] for p in self.planets}
+        for dst, inbound in self.inbound_edges.items():
+            for src, travel in inbound:
+                self.outbound_edges[src].append((dst, travel))
+
+        # front-line: owned planets that have at least one enemy/neutral inbound or outbound edge
+        front_line = {
+            p for p in self.owned_planets
+            if any(src.owner != self.player for src, _ in self.inbound_edges[p])
+            or any(dst.owner != self.player for dst, _ in self.outbound_edges[p])
+        }
+
+        for p in self.owned_planets:
+            p.reinforcement_target = None
+            if p in front_line:
+                continue  # only rear planets get a reinforcement target
+            # Dijkstra through owned-planet subgraph to nearest front-line planet.
+            dist: dict[HPlanet, float] = {p: 0.0}
+            prev: dict[HPlanet, HPlanet | None] = {p: None}
+            heap: list[tuple[float, int, HPlanet]] = [(0.0, id(p), p)]
+            heapq.heapify(heap)
+            found_front: HPlanet | None = None
+            while heap:
+                d, _, node = heapq.heappop(heap)
+                if d > dist.get(node, float('inf')):
+                    continue
+                if node in front_line:
+                    found_front = node
+                    break
+                for dst, travel in self.outbound_edges[node]:
+                    if dst.owner != self.player:
+                        continue  # stay within owned subgraph
+                    nd = d + travel
+                    if nd < dist.get(dst, float('inf')):
+                        dist[dst] = nd
+                        prev[dst] = node
+                        heapq.heappush(heap, (nd, id(dst), dst))
+            if found_front is None:
+                continue
+            # Walk back to the first hop after p
+            node = found_front
+            while prev.get(node) is not p:
+                node = prev[node]  # type: ignore[assignment]
+                if node is None:
+                    break
+            if node is not None and node is not p and node.owner == self.player:
+                p.reinforcement_target = node
 
     def viz_proximity_graph(self) -> None:
-        """Draw proximity_graph edges and future-position planet labels onto the visualizer frame."""
+        """Draw inbound_edges edges and future-position planet labels onto the visualizer frame."""
         moving = {p for p in self.planets if self.future_pos[p] != (p.x, p.y)}
         seen_edges = set()
-        for p, neighbors in self.proximity_graph.items():
+        for p, neighbors in self.inbound_edges.items():
             fpx, fpy = self.future_pos[p]
             if p in moving:
                 viz.add_label(self.scene_step, fpx, fpy, f'P{p.id}', color='#22ffcc')
@@ -107,6 +159,28 @@ class Hellburner:
                 seen_edges.add(edge)
                 nx, ny = self.future_pos[neighbor]
                 viz.add_line(self.scene_step, fpx, fpy, nx, ny, color='#22aaff', width=1)
+
+        reinforce_lines = []
+        for p in self.owned_planets:
+            if p.reinforcement_target is None:
+                continue
+            px, py = self.future_pos[p]
+            tx, ty = self.future_pos[p.reinforcement_target]
+            viz.add_arrow(self.scene_step, px, py, tx, ty, color='#ffaa00', width=2, length_frac=0.5, head_size=6)
+            reinforce_lines.append(f'  P{p.id} -> P{p.reinforcement_target.id}')
+
+        edge_count = sum(len(v) for v in self.inbound_edges.values())
+        lines = [f'inbound_edges: {len(self.planets)} planets, {edge_count} directed edges']
+        for p in sorted(self.planets, key=lambda p: p.id):
+            ins = [f'P{src.id}({t:.0f})' for src, t in self.inbound_edges.get(p, [])]
+            outs = [f'P{dst.id}({t:.0f})' for dst, t in self.outbound_edges.get(p, [])]
+            lines.append(f'  P{p.id}: in=[{", ".join(ins)}] out=[{", ".join(outs)}]')
+        if reinforce_lines:
+            lines.append(f'reinforcement paths ({len(reinforce_lines)}):')
+            lines.extend(reinforce_lines)
+        else:
+            lines.append('reinforcement paths: none')
+        viz.add_text(self.scene_step, '\n'.join(lines))
 
     def intercept_planet(
         self,
@@ -136,6 +210,9 @@ class Hellburner:
                     travel = new_travel
                     break
                 travel = new_travel
+            else:
+                # Diverged: fleet too slow to catch this planet's orbital speed.
+                return 0.0, target.x, target.y, math.inf
             # Recompute final position from converged travel so tx/ty/angle are consistent.
             a = ia + self.angular_velocity * (self.scene_step + travel - 1.0)
             tx, ty = cx + r * math.cos(a), cy + r * math.sin(a)
@@ -157,7 +234,7 @@ class Hellburner:
             else:
                 half_cone = math.asin(min(1.0, planet.radius / dist))
             delta = abs(math.atan2(math.sin(angle - needed_angle), math.cos(angle - needed_angle)))
-            if delta <= half_cone and travel < best_t:
+            if math.isfinite(travel) and delta <= half_cone and travel < best_t:
                 best_t = travel
                 best = planet
         if best is None:
@@ -188,7 +265,7 @@ class Hellburner:
                     half_cone = math.asin(min(1.0, planet.radius / dist))
                 delta = abs(math.atan2(math.sin(fleet.angle - needed_angle),
                                        math.cos(fleet.angle - needed_angle)))
-                if delta <= half_cone and travel < best_t:
+                if math.isfinite(travel) and delta <= half_cone and travel < best_t:
                     best_t = travel
                     best = (planet, travel, px, py)
             if best is not None:
@@ -279,8 +356,8 @@ class Hellburner:
         Returns (orders, battle_won).
         """
         possible_origins = sorted(
-            [(neighbor, dist) for neighbor, dist in self.proximity_graph.get(target, [])
-                if neighbor.owner == self.player], key=lambda x: x[1])
+            [(src, travel) for src, travel in self.inbound_edges.get(target, [])
+                if src.owner == self.player], key=lambda x: x[1])
 
         orders: list[list] = []
         trial_destination_list = {k: list(v) for k, v in self.destination_list.items()}
@@ -314,7 +391,7 @@ class Hellburner:
         best_attack_orders: AttackOrders = (None, -65535, [])
 
         for target in self.planets:
-            if not bool(self.proximity_graph.get(target)):
+            if not bool(self.inbound_edges.get(target)):
                 continue # effectively unreachable
 
             # is owned
@@ -419,7 +496,7 @@ class Hellburner:
             attack_planet, _, attack_orders = attack
             if attack_planet is None:
                 break
-            self.viz_orders(attack)
+            #self.viz_orders(attack)
             self.commit_attack_orders(attack)
             moves.extend(attack_orders)
 

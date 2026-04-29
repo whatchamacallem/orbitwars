@@ -61,6 +61,16 @@ class Visualizer:
             {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'color': color, 'width': width}
         )
 
+    def add_arrow(self, step, x1, y1, x2, y2, color='yellow', width=1, length_frac=0.5, head_size=6):
+        """Add a directed arrow: drawn from x1,y1 toward x2,y2 but only length_frac of the way."""
+        if not self._recording:
+            return
+        self._get_or_create(step)['lines'].append({
+            'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+            'color': color, 'width': width,
+            'arrow': True, 'length_frac': length_frac, 'head_size': head_size,
+        })
+
     def add_text(self, step, text):
         """Add a debug text string shown when that frame is active."""
         if not self._recording:
@@ -159,7 +169,7 @@ def _build_html(frames):
 <div id="main">
   <canvas id="canvas" width="640" height="640"></canvas>
   <div id="sidebar">
-    <div class="panel" id="metaPanel"><h3>Meta</h3><div id="metaContent"></div></div>
+    <div class="panel" id="metaPanel"><h3>Status</h3><div id="metaContent"></div></div>
     <div class="panel" id="textPanel" style="display:none"><h3>Debug Text</h3><pre id="debugText"></pre></div>
     <div class="panel"><h3>Planets</h3><div id="planetContent"></div></div>
     <div class="panel"><h3>Fleets</h3><div id="fleetContent"></div></div>
@@ -294,14 +304,34 @@ function drawFrame(idx) {{
     }}
   }}
 
-  // Debug overlay lines
+  // Debug overlay lines / arrows
   for (const line of (frame.lines || [])) {{
-    ctx.beginPath();
-    ctx.moveTo(tx(line.x1), ty(line.y1));
-    ctx.lineTo(tx(line.x2), ty(line.y2));
-    ctx.strokeStyle = line.color || 'yellow';
-    ctx.lineWidth = line.width || 1;
-    ctx.stroke();
+    const ax = tx(line.x1), ay = ty(line.y1);
+    const bx = tx(line.x2), by = ty(line.y2);
+    const col = line.color || 'yellow';
+    const lw = line.width || 1;
+    if (line.arrow) {{
+      const frac = line.length_frac !== undefined ? line.length_frac : 0.5;
+      const hs = line.head_size !== undefined ? line.head_size : 6;
+      const ex = ax + (bx - ax) * frac, ey = ay + (by - ay) * frac;
+      const dx = (bx - ax), dy = (by - ay);
+      const len = Math.sqrt(dx*dx + dy*dy) || 1;
+      const ux = dx/len, uy = dy/len;
+      const px = -uy, py = ux;
+      ctx.strokeStyle = col; ctx.lineWidth = lw;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ex, ey); ctx.stroke();
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(ex - ux*hs + px*(hs*0.5), ey - uy*hs + py*(hs*0.5));
+      ctx.lineTo(ex - ux*hs - px*(hs*0.5), ey - uy*hs - py*(hs*0.5));
+      ctx.closePath(); ctx.fill();
+    }} else {{
+      ctx.beginPath();
+      ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+      ctx.strokeStyle = col; ctx.lineWidth = lw;
+      ctx.stroke();
+    }}
   }}
 
   // Canvas labels (e.g. future-position planet markers)
