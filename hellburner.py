@@ -152,43 +152,59 @@ class Hellburner:
             if node is not None and node is not p and node.owner == self.player:
                 p.reinforcement_target = node
 
-    def viz_proximity_graph(self) -> None:
-        """Draw inbound_edges edges and future-position planet labels onto the visualizer frame."""
-        moving = {p for p in self.planets if self.future_pos[p] != (p.x, p.y)}
-        seen_edges = set()
-        for p, neighbors in self.inbound_edges.items():
-            fpx, fpy = self.future_pos[p]
-            if p in moving:
-                viz.add_label(self.scene_step, fpx, fpy, f'P{p.id}', color='#22ffcc')
-            for neighbor, _ in neighbors:
-                edge = (min(p.id, neighbor.id), max(p.id, neighbor.id))
-                if edge in seen_edges:
-                    continue
-                seen_edges.add(edge)
-                nx, ny = self.future_pos[neighbor]
-                viz.add_line(self.scene_step, fpx, fpy, nx, ny, color='#22aaff', width=1)
+    @staticmethod
+    def viz_arrow_endpoints(
+        px: float, py: float, tx: float, ty: float,
+        origin_radius: float, target_radius: float,
+    ) -> tuple[float, float, float, float]:
+        dx, dy = tx - px, ty - py
+        d = math.hypot(dx, dy)
+        if d < 1e-6:
+            return px, py, tx, ty
+        ux, uy = dx / d, dy / d
+        sx, sy = px + ux * origin_radius, py + uy * origin_radius
+        ex, ey = tx - ux * target_radius, ty - uy * target_radius
+        return sx, sy, ex, ey
 
-        reinforce_lines = []
-        for p in self.owned_planets:
+    def viz_proximity_graph(self, show_inbound: bool = True) -> None:
+        """Draw directed edges from each planet's current position to the target's future_pos."""
+        edge_map = self.inbound_edges if show_inbound else self.outbound_edges
+        direction = 'inbound' if show_inbound else 'outbound'
+
+        on_screen: list[str] = []
+        for p in sorted(self.planets, key=lambda p: p.id):
+            neighbors = edge_map.get(p, [])
+            if not neighbors:
+                continue
+            px, py = p.x, p.y
+            neighbor_strs: list[str] = []
+            for neighbor, t in neighbors:
+                tx, ty = self.future_pos[neighbor]
+                sx, sy, ex, ey = self.viz_arrow_endpoints(px, py, tx, ty, p.radius, neighbor.radius)
+                viz.add_arrow(self.scene_step, sx, sy, ex, ey, color='#22aaff', width=1, length_frac=1.0, head_size=5)
+                neighbor_strs.append(f'P{neighbor.id}({t:.0f})')
+            on_screen.append(f'  P{p.id}: [{", ".join(neighbor_strs)}]')
+
+        edge_count = sum(len(v) for v in edge_map.values())
+        header = f'{direction}_edges: {len(self.planets)} planets, {edge_count} directed edges'
+        viz.add_text(self.scene_step, header + '\n' + '\n'.join(on_screen))
+
+    def viz_reinforcement_targets(self) -> None:
+        """Draw reinforcement_target arrows from each owned planet's current pos to target's current pos."""
+        lines: list[str] = []
+        for p in sorted(self.owned_planets, key=lambda p: p.id):
             if p.reinforcement_target is None:
                 continue
-            px, py = self.future_pos[p]
-            tx, ty = self.future_pos[p.reinforcement_target]
-            viz.add_arrow(self.scene_step, px, py, tx, ty, color='#ffaa00', width=2, length_frac=0.5, head_size=6)
-            reinforce_lines.append(f'  P{p.id} -> P{p.reinforcement_target.id}')
+            px, py = p.x, p.y
+            tx, ty = p.reinforcement_target.x, p.reinforcement_target.y
+            sx, sy, ex, ey = self.viz_arrow_endpoints(px, py, tx, ty, p.radius, p.reinforcement_target.radius)
+            viz.add_arrow(self.scene_step, sx, sy, ex, ey, color='#22aaff', width=1, length_frac=1.0, head_size=5)
+            lines.append(f'  P{p.id} -> P{p.reinforcement_target.id}')
 
-        edge_count = sum(len(v) for v in self.inbound_edges.values())
-        lines = [f'inbound_edges: {len(self.planets)} planets, {edge_count} directed edges']
-        for p in sorted(self.planets, key=lambda p: p.id):
-            ins = [f'P{src.id}({t:.0f})' for src, t in self.inbound_edges.get(p, [])]
-            outs = [f'P{dst.id}({t:.0f})' for dst, t in self.outbound_edges.get(p, [])]
-            lines.append(f'  P{p.id}: in=[{", ".join(ins)}] out=[{", ".join(outs)}]')
-        if reinforce_lines:
-            lines.append(f'reinforcement paths ({len(reinforce_lines)}):')
-            lines.extend(reinforce_lines)
+        if lines:
+            viz.add_text(self.scene_step, f'reinforcement_targets ({len(lines)}):\n' + '\n'.join(lines))
         else:
-            lines.append('reinforcement paths: none')
-        viz.add_text(self.scene_step, '\n'.join(lines))
+            viz.add_text(self.scene_step, 'reinforcement_targets: none')
 
     def intercept_planet(
         self,
@@ -379,6 +395,8 @@ class Hellburner:
             ships_to_send = int(neighbor.ships)
             angle, ix, iy, travel = self.intercept_planet(neighbor.x, neighbor.y, target, ships_to_send)
 
+            if not math.isfinite(travel):
+                continue
             if self.first_planet_hit(neighbor.x, neighbor.y, angle, ships_to_send, neighbor) is not target:
                 continue
 
@@ -390,6 +408,9 @@ class Hellburner:
                 keep = int(excess_ships // 2)
                 ships_to_send = max(1, ships_to_send - keep)
                 angle, ix, iy, travel = self.intercept_planet(neighbor.x, neighbor.y, target, ships_to_send)
+                if not math.isfinite(travel):
+                    battle_won = True
+                    break
                 trial_destination_list[target][-1] = (self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy)
                 fleet_orders[-1] = [neighbor.id, angle, ships_to_send]
                 intercepts[-1] = (ix, iy, travel)
@@ -512,7 +533,8 @@ class Hellburner:
 
         elapsed_ms = (time.perf_counter() - _t0) * 1000
         viz.add_text(self.scene_step, f'hellburner ms: {elapsed_ms:.2f}ms')
-        #self.viz_proximity_graph()
+        #self.viz_proximity_graph(False) # inbound: True, outbound: False.
+        self.viz_reinforcement_targets()
         #self.viz_destination_list()
         #viz.add_text(self.scene_step, 'moves: ' + str(moves))
 
