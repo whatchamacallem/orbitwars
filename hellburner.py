@@ -38,9 +38,12 @@ def viz_save():
     viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html')
 
 
+SHIP_SPEED_MAX = 6.0  # matches configuration.shipSpeed default
+
 MAX_DISTANCE = 35
 LOOK_AHEAD = 10
-SHIP_SPEED_MAX = 6.0  # matches configuration.shipSpeed default
+REINFORCEMENT_SIZE = 10
+GARRISON_SIZE = 10
 
 def fleet_speed(ships: int | float) -> float:
     """Mirror the engine's speed formula exactly."""
@@ -487,13 +490,13 @@ class Hellburner:
 
         return best_move_orders
 
-    def send_reinforcements_orders(self) -> FleetOrders:
-        """Send all ships from rear planets to their reinforcement_target if safe to do so."""
+    def send_reinforcements(self) -> FleetOrders:
+        """ Allows sending by an intermediate planet if in the way. """
         orders: FleetOrders = []
         for p in self.owned_planets:
             if p.reinforcement_target is None:
                 continue
-            if p.ships < 10:
+            if p.ships < (REINFORCEMENT_SIZE + GARRISON_SIZE):
                 continue
             has_enemy_incoming = any(
                 src.owner != self.player
@@ -501,16 +504,11 @@ class Hellburner:
             if has_enemy_incoming:
                 continue
             target = p.reinforcement_target
-            angle, ix, iy, travel = self.intercept_planet(p.x, p.y, target, p.ships)
+            ships = int(p.ships - GARRISON_SIZE)
+            angle, ix, iy, travel = self.intercept_planet(p.x, p.y, target, ships)
             if not math.isfinite(travel):
                 continue
-            # allow sending by an intermediate planet:
-            #if self.first_planet_hit(p.x, p.y, angle, p.ships, p) is not target:
-            #    continue
-            orders.append([p.id, angle, int(p.ships)])
-            self.destination_list.setdefault(target, [])
-            self.destination_list[target].append((self.player, p.ships, travel, p.x, p.y, ix, iy))
-            p.ships = 0
+            orders.append([p.id, angle, ships])
         return orders
 
     def viz_orders(self, best: MoveOrders) -> None:
@@ -575,14 +573,14 @@ class Hellburner:
             self.commit_move_orders(move_orders)
             moves.extend(fleet_orders)
 
-        reinforcement_orders = self.send_reinforcements_orders()
+        reinforcement_orders = self.send_reinforcements()
         if reinforcement_orders:
             moves.extend(reinforcement_orders)
 
         elapsed_ms = (time.perf_counter() - _t0) * 1000
         viz.add_text(self.scene_step, f'hellburner ms: {elapsed_ms:.2f}ms')
         #self.viz_proximity_graph(False) # inbound: True, outbound: False.
-        self.viz_reinforcement_targets()
+        #self.viz_reinforcement_targets()
         #self.viz_destination_list()
         #viz.add_text(self.scene_step, 'moves: ' + str(moves))
 
