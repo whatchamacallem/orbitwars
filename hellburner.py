@@ -420,6 +420,17 @@ class Hellburner:
         trial_destination_list = {k: list(v) for k, v in self.destination_list.items()}
         trial_destination_list.setdefault(target, [])
         battle_won = False
+
+        # If an enemy fleet is already inbound to this target (attacking its current owner,
+        # who is not us), don't arrive until after that battle resolves.
+        second_enemy_arrival = None
+        if target.owner != self.player:
+            for owner, _, t, _, _, _, _ in self.destination_list.get(target, []):
+                if owner != self.player and owner != target.owner:
+                    turn = math.ceil(t)
+                    if second_enemy_arrival is None or turn > second_enemy_arrival:
+                        second_enemy_arrival = turn
+
         for neighbor, _ in possible_origins:
             if neighbor.ships == 0:
                 continue
@@ -439,6 +450,10 @@ class Hellburner:
             if not math.isfinite(travel):
                 continue
             if self.first_planet_hit(neighbor.x, neighbor.y, angle, ships_to_send, neighbor) is not target:
+                continue
+
+            # + 1 for tolerance in swept collision handling
+            if second_enemy_arrival is not None and math.ceil(travel) <= second_enemy_arrival + 1:
                 continue
 
             trial_destination_list[target].append((self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy))
