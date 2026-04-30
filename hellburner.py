@@ -1,13 +1,21 @@
 import math
 import time
 import sys
+import copy
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Any
 
 from kaggle_environments.envs.orbit_wars.orbit_wars import (
     Fleet, CENTER, ROTATION_RADIUS_LIMIT, SUN_RADIUS,
     distance, point_to_segment_distance
 )
+
+sys.path.insert(0, '/home/t/orbitwars')
+from visualizer import Visualizer
+viz = Visualizer()
+def viz_save():
+    viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html')
 
 class HPlanet:
     def __init__(self, id, owner, x, y, radius, ships, production):
@@ -31,14 +39,27 @@ Intercept = tuple[float, float, float]
 # intercepts is parallel to fleet_orders: list of (ix, iy, travel) pre-computed at plan time
 MoveOrders = tuple[HPlanet | None, int, FleetOrders, list[Intercept]]
 
-sys.path.insert(0, '/home/t/orbitwars')
-from visualizer import Visualizer
-viz = Visualizer()
-def viz_save():
-    viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html')
+@dataclass
+class EarlyGameFleet:
+    source_id: int
+    destination_id: int
+    fleet_size: int
+    garrison_on_arrival: int
+    arrival_turn: int
+    is_capture: bool
 
+@dataclass
+class EarlyGameState:
+    turn: int
+    garrison: dict
+    production: dict
+    owned: set
+    fleets: list = field(default_factory=list)
 
 SHIP_SPEED_MAX = 6.0  # matches configuration.shipSpeed default
+
+EARLY_ROUNDS = 50 # Number rounds with early round logic with 2 players 
+EARLY_LOOK_AHEAD = 30 # Rounds simulated into the future when looking for best moves
 
 MAX_DISTANCE = 35
 LOOK_AHEAD = 10
@@ -425,16 +446,17 @@ class Hellburner:
             intercepts.append((ix, iy, travel))
             trial_end_owner, excess_ships = self.simulate_planet_timeline(target, trial_destination_list)
             if trial_end_owner == self.player:
+                battle_won = True
+
+                # Try leaving half the excess ships behind.
                 keep = int(excess_ships // 2)
                 ships_to_send = max(1, ships_to_send - keep)
                 angle, ix, iy, travel = self.intercept_planet(neighbor.x, neighbor.y, target, ships_to_send)
                 if not math.isfinite(travel):
-                    battle_won = True
                     break
                 trial_destination_list[target][-1] = (self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy)
                 fleet_orders[-1] = [neighbor.id, angle, ships_to_send]
                 intercepts[-1] = (ix, iy, travel)
-                battle_won = True
                 break
 
         return fleet_orders, intercepts, battle_won
@@ -540,6 +562,241 @@ class Hellburner:
             self.destination_list.setdefault(target, [])
             self.destination_list[target].append((self.player, ships, travel, src.x, src.y, ix, iy))
 
+    # ------------------------------------------------------------------
+    # Early game optimizer
+
+    def early_game_compute_travel_turns(self, source_id: int, target: HPlanet, fleet_size: int, launch_turn: int) -> float:
+        src = next(p for p in self.planets if p.id == source_id)
+        orb = self.orbital_info.get(src)
+        if orb is not None:
+            cx = cy = CENTER
+            r, ia = orb
+            a = ia + self.angular_velocity * (launch_turn - 0.5)
+            sx, sy = cx + r * math.cos(a), cy + r * math.sin(a)
+        else:
+            sx, sy = src.x, src.y
+        _, _, _, travel = self.intercept_planet(sx, sy, target, fleet_size)
+        return travel
+
+    def early_game_find_capture_turn(self, state: EarlyGameState, target: HPlanet) -> float:
+        """Return the earliest turn any single owned source can deliver > garrison ships."""
+        garrison_size = target.ships
+        horizon = state.turn + EARLY_LOOK_AHEAD
+        best = math.inf
+        for source in state.owned:
+            current_ships = state.garrison[source]
+            production_rate = state.production[source]
+            for wait_turns in range(EARLY_LOOK_AHEAD):
+                fleet_size = int(current_ships + production_rate * wait_turns)
+                if fleet_size <= garrison_size:
+                    continue
+                launch_turn = state.turn + wait_turns
+                if launch_turn >= horizon:
+                    break
+                travel_turns = self.early_game_compute_travel_turns(source, target, fleet_size, launch_turn)
+                if not math.isfinite(travel_turns):
+                    continue
+                arrival_turn = launch_turn + math.ceil(travel_turns)
+                if arrival_turn <= horizon:
+                    best = min(best, arrival_turn)
+                    break  # larger fleets from this source arrive no earlier
+        return best
+
+    def early_game_assign_fleets(self, state: EarlyGameState, target: HPlanet, capture_turn: int) -> dict:
+        """Pick the single best source: earliest arrival with fleet > garrison."""
+        garrison_size = target.ships
+        best_source = None
+        best_entry = None
+        best_arrival = math.inf
+        for source in state.owned:
+            current_ships = state.garrison[source]
+            production_rate = state.production[source]
+            for wait_turns in range(capture_turn - state.turn):
+                fleet_size = int(current_ships + production_rate * wait_turns)
+                if fleet_size <= garrison_size:
+                    continue
+                launch_turn = state.turn + wait_turns
+                travel_turns = self.early_game_compute_travel_turns(source, target, fleet_size, launch_turn)
+                if not math.isfinite(travel_turns):
+                    continue
+                arrival_turn = launch_turn + math.ceil(travel_turns)
+                if arrival_turn <= capture_turn and arrival_turn < best_arrival:
+                    best_arrival = arrival_turn
+                    best_source = source
+                    best_entry = (fleet_size, launch_turn, arrival_turn)
+                break  # larger fleets from this source arrive no earlier
+        if best_source is None:
+            return {}
+        return {best_source: best_entry}
+
+    def early_game_advance(self, state: EarlyGameState, from_turn: int, to_turn: int) -> EarlyGameState:
+        for current_turn in range(from_turn + 1, to_turn + 1):
+            for fleet in list(state.fleets):
+                if fleet.arrival_turn == current_turn:
+                    if fleet.is_capture:
+                        state.garrison[fleet.destination_id] = fleet.garrison_on_arrival
+                        state.owned.add(fleet.destination_id)
+                        if fleet.destination_id not in state.production:
+                            state.production[fleet.destination_id] = self.early_game_production(fleet.destination_id)
+                    else:
+                        state.garrison[fleet.destination_id] += fleet.garrison_on_arrival
+                    state.fleets.remove(fleet)
+            for planet_id in state.owned:
+                state.garrison[planet_id] += state.production[planet_id]
+        return state
+
+    def early_game_execute_attack(self, state: EarlyGameState, target: HPlanet, fleet_assignment: dict, capture_turn: int) -> EarlyGameState:
+        garrison_size = target.ships
+        total_fleet = sum(fs for fs, _, _ in fleet_assignment.values())
+
+        current_turn = state.turn
+        for source, (fleet_size, launch_turn, _) in sorted(fleet_assignment.items(), key=lambda se: se[1][1]):
+            state = self.early_game_advance(state, current_turn, launch_turn)
+            current_turn = launch_turn
+            state.garrison[source] -= fleet_size
+
+        state.fleets.append(EarlyGameFleet(
+            source_id=-1,
+            destination_id=target.id,
+            fleet_size=total_fleet,
+            garrison_on_arrival=total_fleet - garrison_size,
+            arrival_turn=capture_turn,
+            is_capture=True,
+        ))
+        state = self.early_game_advance(state, current_turn, capture_turn)
+        return state
+
+    def early_game_score(self, state: EarlyGameState) -> int:
+        horizon = state.turn + EARLY_LOOK_AHEAD
+        total = 0
+        for planet_id in state.owned:
+            total += state.garrison[planet_id] + state.production[planet_id] * (horizon - state.turn)
+        for fleet in state.fleets:
+            total += fleet.garrison_on_arrival
+            if fleet.is_capture:
+                total += self.early_game_production(fleet.destination_id) * max(0, horizon - fleet.arrival_turn)
+        return total
+
+    def early_game_production(self, planet_id: int) -> int:
+        p = next((pl for pl in self.planets if pl.id == planet_id), None)
+        return p.production if p else 0
+
+    def run_early_game(self) -> list:
+        owned_ids = {p.id for p in self.owned_planets}
+        neutral_candidates = [
+            p for p in self.planets
+            if p.owner == -1 and any(src.id in owned_ids for src, _ in self.inbound_edges.get(p, []))
+        ]
+
+        # Populate in-flight friendly fleets from destination_list so the optimizer
+        # knows about already-committed ships and won't double-assign the same target.
+        in_flight: list[EarlyGameFleet] = []
+        for dest_planet, arrivals in self.destination_list.items():
+            for owner, ships, t, _, _, _, _ in arrivals:
+                if owner != self.player:
+                    continue
+                arrival = self.scene_step + math.ceil(t)
+                is_cap = dest_planet.owner != self.player
+                surplus = ships - dest_planet.ships
+                in_flight.append(EarlyGameFleet(
+                    source_id=-1,
+                    destination_id=dest_planet.id,
+                    fleet_size=int(ships),
+                    garrison_on_arrival=int(surplus) if is_cap else int(ships),
+                    arrival_turn=arrival,
+                    is_capture=is_cap,
+                ))
+
+        initial_state = EarlyGameState(
+            turn=self.scene_step,
+            garrison={p.id: float(p.ships) for p in self.owned_planets},
+            production={p.id: p.production for p in self.owned_planets},
+            owned=owned_ids.copy(),
+            fleets=in_flight,
+        )
+
+        def initial_gain(planet: HPlanet) -> float:
+            ct = self.early_game_find_capture_turn(initial_state, planet)
+            horizon = initial_state.turn + EARLY_LOOK_AHEAD
+            return planet.production * (horizon - ct) - planet.ships if math.isfinite(ct) else -math.inf
+
+        candidates = sorted(neutral_candidates, key=initial_gain, reverse=True)
+        gain_dbg = [(f'P{p.id}', round(initial_gain(p), 2)) for p in candidates]
+        candidates = [p for p in candidates if initial_gain(p) > 0]
+        viz.add_text(self.scene_step, f'eg_candidates gain: {gain_dbg}\neg_kept: {[f"P{p.id}" for p in candidates]}')
+
+        if not candidates:
+            return []
+
+        best = [self.early_game_score(initial_state), []]
+
+        def upper_bound(state, remaining):
+            horizon = state.turn + EARLY_LOOK_AHEAD
+            bound = self.early_game_score(state)
+            for planet in remaining:
+                ct = self.early_game_find_capture_turn(state, planet)
+                gain = planet.production * (horizon - ct) - planet.ships
+                if gain > 0:
+                    bound += gain
+            return bound
+
+        def dfs(state, remaining, sequence):
+            current_score = self.early_game_score(state)
+            if current_score > best[0]:
+                best[0] = current_score
+                best[1] = list(sequence)
+
+            if upper_bound(state, remaining) <= best[0]:
+                return
+
+            already_targeted = {f.destination_id for f in state.fleets if f.is_capture}
+            for index, planet in enumerate(remaining):
+                if planet.id in already_targeted:
+                    continue
+                horizon = state.turn + EARLY_LOOK_AHEAD
+                ct = self.early_game_find_capture_turn(state, planet)
+                if not math.isfinite(ct):
+                    continue
+                if planet.production * (horizon - ct) - planet.ships <= 0:
+                    continue
+                fleet_assignment = self.early_game_assign_fleets(state, planet, ct)
+                if not fleet_assignment:
+                    continue
+                next_state = self.early_game_execute_attack(copy.deepcopy(state), planet, fleet_assignment, ct)
+                dfs(next_state, remaining[:index] + remaining[index + 1:], sequence + [(planet, fleet_assignment, ct)])
+
+        dfs(initial_state, candidates, [])
+        _, best_sequence = best
+
+        if not best_sequence:
+            return []
+
+        # Emit only the moves whose launch_turn == current step
+        moves: FleetOrders = []
+        dbg = [f'best_seq: {[(f"P{tp.id}", {sid: (fs, lt) for sid,(fs,lt,_) in fa.items()}) for tp,fa,_ in best_sequence]}']
+        for target_planet, fleet_assignment, _ in best_sequence:
+            for source_id, (fleet_size, launch_turn, _) in fleet_assignment.items():
+                if launch_turn != self.scene_step:
+                    dbg.append(f'  skip P{source_id}->P{target_planet.id}: launch={launch_turn} != step={self.scene_step}')
+                    continue
+                src = next((p for p in self.planets if p.id == source_id), None)
+                if src is None:
+                    continue
+                angle, _, _, travel = self.intercept_planet(src.x, src.y, target_planet, fleet_size)
+                if not math.isfinite(travel):
+                    dbg.append(f'  skip P{source_id}->P{target_planet.id}: inf travel')
+                    continue
+                hit = self.first_planet_hit(src.x, src.y, angle, fleet_size, src)
+                if hit is not target_planet:
+                    dbg.append(f'  skip P{source_id}->P{target_planet.id}: first_hit=P{hit.id if hit else None}')
+                    continue
+                moves.append([source_id, angle, fleet_size])
+        viz.add_text(self.scene_step, '\n'.join(dbg))
+
+        return moves
+
+    # ------------------------------------------------------------------
+
     def main(self, obs: dict[str, Any]) -> list[Any]:
         viz.record(obs)
         _t0 = time.perf_counter()
@@ -560,8 +817,16 @@ class Hellburner:
 
         self.build_orbital_info(obs.get('initial_planets', []))
         self.build_proximity_graph()
-        self.build_reinforcement_targets()
         self.build_destination_list()
+
+        num_enemy_players = len(set(p.owner for p in self.enemy_planets if p.owner >= 0))
+        if num_enemy_players == 1 and self.scene_step < EARLY_ROUNDS:
+            moves = self.run_early_game()
+            elapsed_ms = (time.perf_counter() - _t0) * 1000
+            viz.add_text(self.scene_step, f'early game ms: {elapsed_ms:.2f}ms')
+            return moves
+
+        self.build_reinforcement_targets()
 
         moves = []
         while True:

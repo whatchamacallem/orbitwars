@@ -1,7 +1,6 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: © 2017-2026 Adrian Johnston.
+# SPDX-FileCopyrightText: © 2026 Adrian Johnston.
 # SPDX-License-Identifier: MIT
-# This file is licensed under the terms of the LICENSE.md file.
 #
 # This script only archives the .git folder as it contains everything needed to
 # restore the full file tree of the current commit (and all previous).
@@ -21,7 +20,7 @@ if [ "$(command ls)" = "archive.sh" ]; then
 
 	FS_TYPE=$(stat -f -c "%T" . 2>/dev/null)
 	if [ "$FS_TYPE" = "v9fs" ] || [ "$FS_TYPE" = "fuseblk" ] || [ "$FS_TYPE" = "ntfs" ]; then
-		echo "Windows detected. Setting config core.fileMode false"
+		echo "Windows detected. Setting config core.fileMode false."
 		git config core.fileMode false
 	fi
 
@@ -37,5 +36,3 @@ fi
 tar -cJf "$DESTINATION/$ARCHIVE" -C ".." "$PROJECT/archive.sh" "$PROJECT/.git"
 
 echo "wrote: $DESTINATION/$ARCHIVE"
-echo "extract with: tar xJf $ARCHIVE"
-echo "then restore files by running archive.sh again or with: git restore ."
