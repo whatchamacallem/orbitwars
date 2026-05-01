@@ -8,7 +8,7 @@ specified.
 Ignore the `git` history. Deleted code is meant to be deleted. Use the `python3`
 command not `python`.
 
-Read `rules.md` for all the rules.
+Read `rules.md` for all the rules. Never abbreviate.
 
 ## Notebooks
 

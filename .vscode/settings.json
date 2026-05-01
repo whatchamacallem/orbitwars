@@ -4,12 +4,14 @@
 {
     "cSpell.words": [
         "ajohn",
+        "dataclass",
         "defeatable",
         "Hellburner",
         "isinstance",
         "kaggle",
         "orbitwars",
-        "venv"
+        "venv",
+        "Warchest"
     ],
     "markdownlint.config": {
         "MD033": {
