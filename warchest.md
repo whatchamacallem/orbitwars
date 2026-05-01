@@ -34,7 +34,7 @@ TIME_BUDGET_S       = 0.800  # hard wall; return best-found-so-far if exceeded
 DFS_EARLY_EXIT_S    = 0.080  # soft cutoff inside DFS loop (leaves room for emit/reinforce)
 
 # Lookahead
-UNIFIED_LOOK_AHEAD  = 25     # horizon = min(scene_step + UNIFIED_LOOK_AHEAD, 500)
+WARCHEST_LOOK_AHEAD  = 25     # horizon = min(scene_step + WARCHEST_LOOK_AHEAD, 500)
 
 # Candidate generation
 MAX_CANDIDATES      = 6      # hard cap on DFS branching factor (reduce to 4 if timing spikes)
@@ -215,7 +215,7 @@ def warchest_dfs(self, state, remaining, sequence, horizon, t0, best):
         if not assignment:
             continue
 
-        next_state = self.warchest_execute(warchest_copy(state), planet, assignment)
+        next_state = self.warchest_execute(warchest_state_copy(state), planet, assignment)
         self.warchest_dfs(
             next_state,
             remaining[:i] + remaining[i+1:],
@@ -414,11 +414,11 @@ After `warchest_execute` returns, `state.turn == latest_arrival`. The DFS contin
 planning from the arrival turn, which means follow-on attacks can use the captured
 planet as a source and the scoring function sees the correct post-capture ownership.
 
-**Depth impact**: with `UNIFIED_LOOK_AHEAD=25` and typical travel of 6–10 turns,
+**Depth impact**: with `WARCHEST_LOOK_AHEAD=25` and typical travel of 6–10 turns,
 advancing to `latest_arrival` leaves 15–19 turns of horizon after the first capture.
 A second capture at 6–10 turns later still leaves horizon for a third level. DFS depth
 remains 2–3 in practice, which is sufficient. If timing analysis shows depth 1 dominates,
-reduce `UNIFIED_LOOK_AHEAD` before reducing `MAX_CANDIDATES`.
+reduce `WARCHEST_LOOK_AHEAD` before reducing `MAX_CANDIDATES`.
 
 **Synchronized sources with different launch turns**: `warchest_execute` processes sources
 in ascending `launch_turn` order. Each source advances the shared state to `launch_turn - 1`,
@@ -427,10 +427,10 @@ incrementally, production and enemy arrivals between source launches are applied
 in chronological order. This is correct: a source launching at t=8 sees the garrison as it
 actually stands after production and combat through t=8.
 
-### 5.4 `warchest_copy(state)` — Optimized State Copy
+### 5.4 `warchest_state_copy(state)` — Optimized State Copy
 
 ```python
-def warchest_copy(state: WarchestState) -> WarchestState:
+def warchest_state_copy(state: WarchestState) -> WarchestState:
     return WarchestState(
         turn=state.turn,
         garrison=dict(state.garrison),
@@ -695,7 +695,7 @@ Tight `warchest_upper_bound` pruning should keep total DFS time well under 100ms
 |---|---|---|
 | `MAX_CANDIDATES` | Hard cap on DFS branching | Default 6; reduce to 4 if timing spikes |
 | `warchest_upper_bound` tightness | Prunes branches early | Default tight bound (§8.2) |
-| `UNIFIED_LOOK_AHEAD` | Less `warchest_advance` work per node | Reduce if still slow |
+| `WARCHEST_LOOK_AHEAD` | Less `warchest_advance` work per node | Reduce if still slow |
 | `DFS_EARLY_EXIT_S` | Returns best-found-so-far | Always present as safety net |
 
 If a turn exceeds 100ms, tighten pruning (fewer candidates or tighter horizon), not caching.
@@ -863,7 +863,7 @@ def warchest_candidates(
         if not enemy_inbound:
             continue
         # Quick simulation: will we lose this planet?
-        trial = warchest_copy(initial)
+        trial = warchest_state_copy(initial)
         last_enemy_arrival = max(f.arrival_turn for f in enemy_inbound)
         self.warchest_advance(trial, min(last_enemy_arrival, horizon))
         if trial.ownership.get(p.id) != self.player:
@@ -1104,7 +1104,7 @@ def main(self, obs: dict) -> list:
     self.build_destination_list()
     self.build_reinforcement_targets()
 
-    horizon = min(self.scene_step + UNIFIED_LOOK_AHEAD, 500)
+    horizon = min(self.scene_step + WARCHEST_LOOK_AHEAD, 500)
     moves   = self.run_unified_search(horizon)
 
     reinforcement_orders = self.send_reinforcements()
@@ -1155,9 +1155,9 @@ def main(self, obs: dict) -> list:
 1. Update `main()`: add `all_bodies`, `owned_comets`, `comet_ids`; remove old branching
 2. Update `build_orbital_info` to iterate `self.all_bodies` and register comets as `None` (§11.2)
 3. Update `first_planet_hit` and `build_destination_list` to iterate `self.all_bodies` (§11.3)
-4. Add module-level constants: `TIME_BUDGET_S`, `DFS_EARLY_EXIT_S`, `UNIFIED_LOOK_AHEAD`, `MAX_CANDIDATES`, `ENEMY_WEIGHT`, `GARRISON_SIZE`, `REINFORCEMENT_SIZE`
+4. Add module-level constants: `TIME_BUDGET_S`, `DFS_EARLY_EXIT_S`, `WARCHEST_LOOK_AHEAD`, `MAX_CANDIDATES`, `ENEMY_WEIGHT`, `GARRISON_SIZE`, `REINFORCEMENT_SIZE`
 5. Add `WarchestFleet`, `WarchestState` dataclasses; add `self._warchest_committed_ids: set[int] = set()` to `__init__`
-6. Implement `warchest_copy`
+6. Implement `warchest_state_copy`
 7. Implement `warchest_advance` (production-first order)
 8. Implement `warchest_resolve_battle` (two-stage: fleet-fight then garrison-fight)
 9. Implement `warchest_initial_state` (skip comet destinations; project garrison to arrival time)
@@ -1171,4 +1171,4 @@ def main(self, obs: dict) -> list:
 17. Implement `drain_comets`
 18. Wire into `main()`, remove `run_early_game` / `evaluate_move_orders`
 19. Add viz hooks: candidates list, assignment per node, score at each node, timing
-20. Tune `UNIFIED_LOOK_AHEAD`, `ENEMY_WEIGHT`, `MAX_CANDIDATES` empirically vs. baseline
+20. Tune `WARCHEST_LOOK_AHEAD`, `ENEMY_WEIGHT`, `MAX_CANDIDATES` empirically vs. baseline

@@ -25,7 +25,7 @@ class HPlanet:
 
 # HPlanet -> (orbital_radius, initial_angle) if the planet orbits the sun, else None
 OrbitalInfo = dict[HPlanet, tuple[float, float] | None]
-# HPlanets rotated by LOOK_AHEAD
+# HPlanets rotated by ROTATION_LOOK_AHEAD
 FuturePos = dict[HPlanet, tuple[float, float]]
 # dst -> [(src, travel_steps)]: directed graph; src departs now, dst is its intercept position
 ProximityGraph = dict[HPlanet, list[tuple[HPlanet, float]]]
@@ -62,7 +62,7 @@ EARLY_ROUNDS = 50 # Number rounds with early round logic with 2 players
 EARLY_LOOK_AHEAD = 30 # Rounds simulated into the future when looking for best moves
 
 MAX_DISTANCE = 35
-LOOK_AHEAD = 10
+ROTATION_LOOK_AHEAD = 10
 REINFORCEMENT_SIZE = 10
 GARRISON_SIZE = 10
 
@@ -118,7 +118,7 @@ class Hellburner:
             orb = self.orbital_info[p]
             if orb is not None:
                 r, ia = orb
-                a = ia + self.angular_velocity * (self.scene_step + 1 + LOOK_AHEAD)
+                a = ia + self.angular_velocity * (self.scene_step + 1 + ROTATION_LOOK_AHEAD)
                 self.future_pos[p] = (cx + r * math.cos(a), cy + r * math.sin(a))
             else:
                 self.future_pos[p] = (p.x, p.y)

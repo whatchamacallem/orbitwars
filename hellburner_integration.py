@@ -1,0 +1,475 @@
+"""
+Regression tests for hellburner.py — run with: python3 hellburner_tests.py
+Covers run_unified_search() and everything it calls.
+"""
+import math
+import sys
+import time
+import unittest
+
+sys.path.insert(0, '/home/t/orbitwars')
+
+from hellburner import (
+    Hellburner, WarchestFleet, WarchestState, Assignment,
+    warchest_state_copy, fleet_speed, WARCHEST_LOOK_AHEAD,
+    MAX_DISTANCE, GARRISON_SIZE, REINFORCEMENT_SIZE,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def run(obs):
+    """Construct a fresh Hellburner and call main()."""
+    h = Hellburner()
+    moves = h.main(obs)
+    return h, moves
+
+class HellburnerIntegrationTest(unittest.TestCase):
+
+    def _print_diagnostics(self, h, obs):
+        print(f"\n--- DIAGNOSTIC step={obs['step']} ---")
+        print(f"owned_planets: {[p.id for p in h.owned_planets]}")
+        print(f"enemy_planets: {[p.id for p in h.enemy_planets]}")
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
+        print(f"scene_step={h.scene_step}, horizon={horizon}")
+
+        initial = h.warchest_initial_state()
+        candidates = h.warchest_candidates(initial, horizon)
+        print(f"candidates: {[p.id for p in candidates]}")
+
+        for p in candidates:
+            assignment = h.warchest_assign_fleet(initial, p, horizon)
+            print(f"  assign_fleet(target=P{p.id}, ships={p.ships}, owner={p.owner}): {assignment}")
+            if not assignment:
+                edges = h.inbound_edges.get(p, [])
+                print(f"    inbound edges from owned: {[(e.planet.id, e.travel) for e in edges if initial.ownership.get(e.planet.id) == h.player]}")
+
+        print(f"warchest_score(initial): {h.warchest_score(initial, horizon):.1f}")
+        print("non-owned planets with reachable inbound edges from owned:")
+        for p in h.planets:
+            if p.owner == h.player or p.id in h.comet_ids:
+                continue
+            edges = h.inbound_edges.get(p, [])
+            owned_edges = [(e.planet.id, round(e.travel, 1)) for e in edges if initial.ownership.get(e.planet.id) == h.player]
+            if not owned_edges:
+                continue
+            ct = h.warchest_earliest_capture(initial, p, horizon)
+            gain = p.production * (horizon - ct) - p.ships if math.isfinite(ct) else float('-inf')
+            print(f"  P{p.id}(owner={p.owner}, ships={p.ships}, prod={p.production}): sources={owned_edges} earliest_ct={ct} gain={gain:.1f}")
+
+    def test_p16_attacks_p12_not_p28(self):
+        """P12 (prod=5, 21 ships) must be a viable capture target for P16 at step 5.
+
+        Before fix: neutral planets incorrectly accumulated production during travel,
+        inflating P12's required garrison from 21 to 21+5*travel and excluding it
+        from warchest_assign_fleet. P28 (prod=1, same garrison) was chosen instead.
+
+        Fix: only add target production to arrival_garrison when target_owner != -1.
+        After fix: warchest_assign_fleet must return a non-empty assignment for P12.
+        """
+        OBS = {
+            "remainingOverageTime": 2, "step": 5,
+            "planets": [
+                [0,-1,91.95876513637724,76.61005433633235,2.6094379124341005,56,5],
+                [1,-1,8.041234863622762,76.61005433633235,2.6094379124341005,56,5],
+                [2,-1,91.95876513637724,23.389945663667646,2.6094379124341005,56,5],
+                [3,-1,8.041234863622762,23.389945663667646,2.6094379124341005,56,5],
+                [4,-1,58.21341496703934,98.03656470846852,1.6931471805599454,29,2],
+                [5,-1,41.78658503296066,98.03656470846852,1.6931471805599454,29,2],
+                [6,-1,58.21341496703934,1.963435291531482,1.6931471805599454,29,2],
+                [7,-1,41.78658503296066,1.963435291531482,1.6931471805599454,29,2],
+                [8,-1,91.96946665555683,92.57045557340987,1,39,1],
+                [9,-1,8.030533344443171,92.57045557340987,1,39,1],
+                [10,-1,91.96946665555683,7.429544426590127,1,39,1],
+                [11,-1,8.030533344443171,7.429544426590127,1,39,1],
+                [12,-1,66.0256019347463,72.09416028290426,2.6094379124341005,21,5],
+                [13,-1,27.905839717095724,66.02560193474628,2.6094379124341005,21,5],
+                [14,-1,72.09416028290428,33.974398065253716,2.6094379124341005,21,5],
+                [15,-1,33.974398065253695,27.905839717095734,2.6094379124341005,21,5],
+                [16,0,60.50317286419306,82.71298951948572,2.09861228866811,22,3],
+                [17,-1,29.85786304031193,77.83434285580084,2.09861228866811,26,3],
+                [18,-1,70.14213695968807,22.16565714419916,2.09861228866811,26,3],
+                [19,1,39.49682713580694,17.28701048051429,2.09861228866811,22,3],
+                [20,-1,78.98980236313426,69.97097944974617,2.09861228866811,8,3],
+                [21,-1,16.241819274995294,59.981677983870696,2.09861228866811,8,3],
+                [22,-1,83.7581807250047,40.018322016129304,2.09861228866811,8,3],
+                [23,-1,21.010197636865747,30.029020550253826,2.09861228866811,8,3],
+                [24,-1,79.55293278988454,91.12523799059,2.09861228866811,29,3],
+                [25,-1,20.447067210115463,91.12523799059,2.09861228866811,29,3],
+                [26,-1,79.55293278988454,8.874762009410006,2.09861228866811,29,3],
+                [27,-1,20.447067210115463,8.874762009410006,2.09861228866811,29,3],
+                [28,-1,71.22419642528061,82.39988333682554,1,21,1],
+                [29,-1,19.76405635497498,74.20757455908523,1,21,1],
+                [30,-1,80.23594364502502,25.79242544091477,1,21,1],
+                [31,-1,28.775803574719397,17.600116663174454,1,21,1],
+            ],
+            "fleets": [], "player": 0, "angular_velocity": 0.039468093957379685,
+            "initial_planets": [
+                [0,-1,91.95876513637724,76.61005433633235,2.6094379124341005,56,5],
+                [1,-1,8.041234863622762,76.61005433633235,2.6094379124341005,56,5],
+                [2,-1,91.95876513637724,23.389945663667646,2.6094379124341005,56,5],
+                [3,-1,8.041234863622762,23.389945663667646,2.6094379124341005,56,5],
+                [4,-1,58.21341496703934,98.03656470846852,1.6931471805599454,29,2],
+                [5,-1,41.78658503296066,98.03656470846852,1.6931471805599454,29,2],
+                [6,-1,58.21341496703934,1.963435291531482,1.6931471805599454,29,2],
+                [7,-1,41.78658503296066,1.963435291531482,1.6931471805599454,29,2],
+                [8,-1,91.96946665555683,92.57045557340987,1,39,1],
+                [9,-1,8.030533344443171,92.57045557340987,1,39,1],
+                [10,-1,91.96946665555683,7.429544426590127,1,39,1],
+                [11,-1,8.030533344443171,7.429544426590127,1,39,1],
+                [12,-1,69.2998942481249,69.29989424812489,2.6094379124341005,21,5],
+                [13,-1,30.7001057518751,69.29989424812489,2.6094379124341005,21,5],
+                [14,-1,69.2998942481249,30.700105751875114,2.6094379124341005,21,5],
+                [15,-1,30.7001057518751,30.700105751875114,2.6094379124341005,21,5],
+                [16,-1,65.51560671929033,80.65488984891996,2.09861228866811,26,3],
+                [17,-1,34.48439328070967,80.65488984891996,2.09861228866811,26,3],
+                [18,-1,65.51560671929033,19.345110151080036,2.09861228866811,26,3],
+                [19,-1,34.48439328070967,19.345110151080036,2.09861228866811,26,3],
+                [20,-1,81.76907114398183,65.16491938271976,2.09861228866811,8,3],
+                [21,-1,18.230928856018167,65.16491938271976,2.09861228866811,8,3],
+                [22,-1,81.76907114398183,34.83508061728024,2.09861228866811,8,3],
+                [23,-1,18.230928856018167,34.83508061728024,2.09861228866811,8,3],
+                [24,-1,79.55293278988454,91.12523799059,2.09861228866811,29,3],
+                [25,-1,20.447067210115463,91.12523799059,2.09861228866811,29,3],
+                [26,-1,79.55293278988454,8.874762009410006,2.09861228866811,29,3],
+                [27,-1,20.447067210115463,8.874762009410006,2.09861228866811,29,3],
+                [28,-1,76.05407808369601,78.66014601057486,1,21,1],
+                [29,-1,23.945921916303988,78.66014601057486,1,21,1],
+                [30,-1,76.05407808369601,21.339853989425137,1,21,1],
+                [31,-1,23.945921916303988,21.339853989425137,1,21,1],
+            ],
+            "next_fleet_id": 0, "comets": [], "comet_planet_ids": [],
+        }
+        h, moves = run(OBS)
+
+        p16_moves = [m for m in moves if m.planet_id == 16]
+        self.assertTrue(p16_moves, "P16 should issue a move order")
+
+        planet_by_id = {p.id: p for p in h.planets}
+        p16 = planet_by_id[16]
+        for m in p16_moves:
+            target = h.first_planet_hit(p16.x, p16.y, m.angle, m.ships, p16)
+            self.assertIsNotNone(target, "P16 move should reach a planet")
+            self.assertEqual(
+                target.id, 12,
+                f"P16 should attack P12 (prod=5), but attacked P{target.id} (prod={target.production})",
+            )
+
+    def test_no_redundant_attack_when_fleets_in_flight(self):
+        """Two friendly fleets (19+35 ships) already en route to P5 (garrison=29) guarantee capture.
+        P14 is also covered by a 22-ship fleet.
+
+        Before fix: warchest_score(initial) = 523.6 inflated by unresolved in-flight fleet bonuses.
+        Any post-DFS branch scored ~234, so the DFS kept the empty sequence as best and emitted nothing.
+        Meanwhile a profitable P4 capture (score +49 vs baseline) existed and was invisible to the DFS.
+
+        Fix: run_unified_search pre-advances initial state past all in-flight fleet arrivals
+        so the DFS baseline and all branches are scored in the same post-arrival reference frame.
+
+        After fix: the DFS finds a non-empty plan (e.g. P20→P4 deferred to turn 29), and no
+        move — immediate or deferred — should target P5 or P14 which are already covered.
+        """
+        OBS = {
+            "remainingOverageTime": 2, "step": 24,
+            "planets": [
+                [0,-1,91.95876513637724,76.61005433633235,2.6094379124341005,56,5],
+                [1,-1,8.041234863622762,76.61005433633235,2.6094379124341005,56,5],
+                [2,-1,91.95876513637724,23.389945663667646,2.6094379124341005,56,5],
+                [3,-1,8.041234863622762,23.389945663667646,2.6094379124341005,56,5],
+                [4,-1,58.21341496703934,98.03656470846852,1.6931471805599454,29,2],
+                [5,-1,41.78658503296066,98.03656470846852,1.6931471805599454,29,2],
+                [6,-1,58.21341496703934,1.963435291531482,1.6931471805599454,29,2],
+                [7,-1,41.78658503296066,1.963435291531482,1.6931471805599454,29,2],
+                [8,-1,91.96946665555683,92.57045557340987,1,39,1],
+                [9,-1,8.030533344443171,92.57045557340987,1,39,1],
+                [10,-1,91.96946665555683,7.429544426590127,1,39,1],
+                [11,-1,8.030533344443171,7.429544426590127,1,39,1],
+                [12,0,46.66839588219542,77.09007659604964,2.6094379124341005,5,5],
+                [13,-1,22.90992340395037,46.6683958821954,2.6094379124341005,21,5],
+                [14,-1,77.09007659604963,53.3316041178046,2.6094379124341005,21,5],
+                [15,1,53.33160411780459,22.909923403950366,2.6094379124341005,5,5],
+                [16,0,35.389915902428534,81.0966520091632,2.09861228866811,3,3],
+                [17,-1,16.289960716956593,56.63999812144354,2.09861228866811,26,3],
+                [18,-1,83.71003928304341,43.36000187855647,2.09861228866811,26,3],
+                [19,1,64.61008409757147,18.903347990836817,2.09861228866811,3,3],
+                [20,0,57.602172922521866,84.37230903055311,2.09861228866811,40,3],
+                [21,1,18.493948145226355,34.29594454416049,2.09861228866811,17,3],
+                [22,0,81.50605185477365,65.70405545583951,2.09861228866811,17,3],
+                [23,1,42.39782707747814,15.627690969446874,2.09861228866811,40,3],
+                [24,-1,79.55293278988454,91.12523799059,2.09861228866811,29,3],
+                [25,-1,20.447067210115463,91.12523799059,2.09861228866811,29,3],
+                [26,-1,79.55293278988454,8.874762009410006,2.09861228866811,29,3],
+                [27,-1,20.447067210115463,8.874762009410006,2.09861228866811,29,3],
+                [28,0,43.44854663975214,88.17456500089159,1,8,1],
+                [29,-1,11.375567941556454,47.10652418336046,1,21,1],
+                [30,-1,88.62443205844355,52.89347581663954,1,21,1],
+                [31,1,56.55145336024787,11.825434999108417,1,8,1],
+            ],
+            "fleets": [
+                [6,0,71.60718222146852,61.07586154601816,-0.7650593937148614,12,22],
+                [7,1,28.392817778531484,38.92413845398188,2.376533259874932,15,22],
+                [10,0,38.006440366653166,86.02720794751365,1.265847827302049,16,19],
+                [11,0,46.21361113618849,82.542343903016,1.8491023031553986,12,35],
+                [12,1,61.99355963334684,13.972792052486362,-1.8757448262877445,19,19],
+                [13,1,53.78638886381151,17.457656096984,-1.2924903504343943,15,35],
+            ],
+            "player": 0, "angular_velocity": 0.039468093957379685,
+            "initial_planets": [
+                [0,-1,91.95876513637724,76.61005433633235,2.6094379124341005,56,5],
+                [1,-1,8.041234863622762,76.61005433633235,2.6094379124341005,56,5],
+                [2,-1,91.95876513637724,23.389945663667646,2.6094379124341005,56,5],
+                [3,-1,8.041234863622762,23.389945663667646,2.6094379124341005,56,5],
+                [4,-1,58.21341496703934,98.03656470846852,1.6931471805599454,29,2],
+                [5,-1,41.78658503296066,98.03656470846852,1.6931471805599454,29,2],
+                [6,-1,58.21341496703934,1.963435291531482,1.6931471805599454,29,2],
+                [7,-1,41.78658503296066,1.963435291531482,1.6931471805599454,29,2],
+                [8,-1,91.96946665555683,92.57045557340987,1,39,1],
+                [9,-1,8.030533344443171,92.57045557340987,1,39,1],
+                [10,-1,91.96946665555683,7.429544426590127,1,39,1],
+                [11,-1,8.030533344443171,7.429544426590127,1,39,1],
+                [12,-1,69.2998942481249,69.29989424812489,2.6094379124341005,21,5],
+                [13,-1,30.7001057518751,69.29989424812489,2.6094379124341005,21,5],
+                [14,-1,69.2998942481249,30.700105751875114,2.6094379124341005,21,5],
+                [15,-1,30.7001057518751,30.700105751875114,2.6094379124341005,21,5],
+                [16,-1,65.51560671929033,80.65488984891996,2.09861228866811,26,3],
+                [17,-1,34.48439328070967,80.65488984891996,2.09861228866811,26,3],
+                [18,-1,65.51560671929033,19.345110151080036,2.09861228866811,26,3],
+                [19,-1,34.48439328070967,19.345110151080036,2.09861228866811,26,3],
+                [20,-1,81.76907114398183,65.16491938271976,2.09861228866811,8,3],
+                [21,-1,18.230928856018167,65.16491938271976,2.09861228866811,8,3],
+                [22,-1,81.76907114398183,34.83508061728024,2.09861228866811,8,3],
+                [23,-1,18.230928856018167,34.83508061728024,2.09861228866811,8,3],
+                [24,-1,79.55293278988454,91.12523799059,2.09861228866811,29,3],
+                [25,-1,20.447067210115463,91.12523799059,2.09861228866811,29,3],
+                [26,-1,79.55293278988454,8.874762009410006,2.09861228866811,29,3],
+                [27,-1,20.447067210115463,8.874762009410006,2.09861228866811,29,3],
+                [28,-1,76.05407808369601,78.66014601057486,1,21,1],
+                [29,-1,23.945921916303988,78.66014601057486,1,21,1],
+                [30,-1,76.05407808369601,21.339853989425137,1,21,1],
+                [31,-1,23.945921916303988,21.339853989425137,1,21,1],
+            ],
+            "next_fleet_id": 14, "comets": [], "comet_planet_ids": [],
+        }
+        h, moves = run(OBS)
+
+        # No emitted move should hit an already-covered planet
+        planet_by_id = {p.id: p for p in h.planets}
+        for m in moves:
+            src = planet_by_id[m.planet_id]
+            target = h.first_planet_hit(src.x, src.y, m.angle, m.ships, src)
+            self.assertIsNotNone(target, f"move from P{m.planet_id} hits no planet")
+            self.assertNotIn(
+                target.id, {5, 14},
+                f"P{m.planet_id} attacked P{target.id} which is already covered by in-flight friendly fleets",
+            )
+
+        # Core regression: the DFS must find a profitable deferred plan even when no fleet
+        # launches this turn. Verify by running warchest_dfs on the pre-advanced state directly.
+        initial = h.warchest_initial_state()
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
+
+        # Pre-advance past all in-flight arrivals (the fix: normalize baseline with branches)
+        all_arrivals = [f.arrival_turn for f in initial.friendly_fleets + initial.enemy_fleets]
+        self.assertTrue(all_arrivals, "test requires in-flight fleets")
+        pre_state = warchest_state_copy(initial)
+        h.warchest_advance(pre_state, max(all_arrivals))
+
+        baseline = h.warchest_score(pre_state, horizon)
+        candidates = h.warchest_candidates(pre_state, horizon)
+        best = [baseline, []]
+        import time as _time
+        h.warchest_dfs(pre_state, candidates, [], horizon, _time.perf_counter(), best)
+
+        self.assertTrue(
+            best[1],
+            "DFS on pre-advanced state should find a non-empty profitable plan; "
+            f"baseline={baseline:.1f}, best_score={best[0]:.1f}",
+        )
+        self.assertGreater(
+            best[0], baseline,
+            f"DFS plan should improve on baseline; baseline={baseline:.1f}, best={best[0]:.1f}",
+        )
+
+
+    def test_orbiting_source_phase2_position(self):
+        """warchest_assign_fleet Phase 2 must use the correct orbital position for the source.
+
+        Before fix: Phase 2 computed source position at turn `launch_turn - 0.5`, which is
+        `initial_angle + ω*(launch_turn - 0.5)`. Since `launch_turn` is an absolute game turn
+        (e.g. state.turn=0 + delay=0 → launch_turn=0), this evaluated to ω*(-0.5) — rotating
+        the planet backward by half a step — yielding a position inconsistent with the observed
+        src.x, src.y. The resulting ic2.travel differed from Phase 1 by enough for ceil() to
+        increase by 1, making arrival2 ≠ latest_arrival and discarding the only candidate source,
+        causing assign_fleet to return {} even when the attack is viable.
+
+        Fix: use `initial_angle + ω*launch_turn` (launch_turn is already an absolute turn).
+
+        After fix: when P16 (orbiting, 30 ships) can clearly beat P5 (29-ship neutral),
+        warchest_assign_fleet must return a non-empty assignment.
+        """
+        OBS = {
+            "remainingOverageTime": 2, "step": 1,
+            "planets": [
+                [4, -1, 58.21341496703934, 98.03656470846852, 1.6931471805599454, 29, 2],
+                [5, -1, 41.78658503296066, 98.03656470846852, 1.6931471805599454, 29, 2],
+                [12, -1, 69.2998942481249, 69.29989424812489, 2.6094379124341005, 21, 5],
+                [13, -1, 30.7001057518751, 69.29989424812489, 2.6094379124341005, 21, 5],
+                [16, 0, 65.51560671929033, 80.65488984891996, 2.09861228866811, 30, 3],
+                [17, -1, 34.48439328070967, 80.65488984891996, 2.09861228866811, 26, 3],
+                [19, 1, 34.48439328070967, 19.345110151080036, 2.09861228866811, 10, 3],
+                [20, -1, 81.76907114398183, 65.16491938271976, 2.09861228866811, 8, 3],
+                [24, -1, 79.55293278988454, 91.12523799059, 2.09861228866811, 29, 3],
+                [25, -1, 20.447067210115463, 91.12523799059, 2.09861228866811, 29, 3],
+                [28, -1, 76.05407808369601, 78.66014601057486, 1, 21, 1],
+                [29, -1, 23.945921916303988, 78.66014601057486, 1, 21, 1],
+            ],
+            "fleets": [], "player": 0, "angular_velocity": 0.039468093957379685,
+            "initial_planets": [
+                [16, -1, 65.51560671929033, 80.65488984891996, 2.09861228866811, 26, 3],
+            ],
+            "next_fleet_id": 0, "comets": [], "comet_planet_ids": [],
+        }
+        h, _ = run(OBS)
+        planet_by_id = {p.id: p for p in h.planets}
+        p5 = planet_by_id[5]
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
+        initial = h.warchest_initial_state()
+
+        assignment = h.warchest_assign_fleet(initial, p5, horizon)
+        self.assertTrue(
+            assignment,
+            "warchest_assign_fleet must return a non-empty assignment for P5 "
+            "(P16 has 30 ships vs P5 garrison of 29). "
+            "Before fix: Phase 2 used initial_angle + ω*(launch_turn - 0.5) which "
+            "gave a wrong source position and caused arrival2 ≠ latest_arrival, "
+            "silently discarding the only candidate and returning {}.",
+        )
+
+        total_ships = sum(a.ships for a in assignment.values())
+        self.assertGreater(
+            total_ships, p5.ships,
+            f"Assigned fleet ({total_ships} ships) must exceed P5 garrison ({p5.ships})",
+        )
+
+
+    def test_p20_attacks_p14_not_p28(self):
+        """P20 (28 ships, prod=3) must attack P14 (prod=5, 21 ships) at step 20, not P28 (prod=1).
+
+        Before fix: warchest_assign_fleet Phase 1 computed source intercepts from src.x/src.y
+        (the planet's position at scene_step=19). When the DFS advances state to a later turn
+        (e.g. turn 29 after executing P14), Phase 1's `arrival` and Phase 2's `arrival2` used
+        inconsistent positions for orbiting sources: Phase 1 used the old scene_step position
+        while Phase 2 correctly used the orbital position at launch_turn. The mismatch caused
+        `arrival2 != latest_arrival`, silently discarding the source in Phase 2 and returning {}.
+
+        Consequence: the DFS could not find the P14-then-P28 sequence (P28 assignment failed
+        after P14 since P16 was now far from P28). Instead it found P28-then-P14 (score 351.8),
+        which emits P16 -> P28 this turn rather than the better P20 -> P14 (score 490.8 for the
+        full P14->P25->P24->P5 sequence).
+
+        Fix: Phase 1 source intercept uses orbital position at state.turn (matching Phase 2's
+        launch_turn=state.turn+delay when delay=0).
+
+        After fix: the main move must be P20 -> P14, not P16 -> P28.
+        """
+        OBS = {
+            "remainingOverageTime": 2, "step": 20,
+            "planets": [
+                [0,-1,91.95876513637724,76.61005433633235,2.6094379124341005,56,5],
+                [1,-1,8.041234863622762,76.61005433633235,2.6094379124341005,56,5],
+                [2,-1,91.95876513637724,23.389945663667646,2.6094379124341005,56,5],
+                [3,-1,8.041234863622762,23.389945663667646,2.6094379124341005,56,5],
+                [4,-1,58.21341496703934,98.03656470846852,1.6931471805599454,29,2],
+                [5,-1,41.78658503296066,98.03656470846852,1.6931471805599454,29,2],
+                [6,-1,58.21341496703934,1.963435291531482,1.6931471805599454,29,2],
+                [7,-1,41.78658503296066,1.963435291531482,1.6931471805599454,29,2],
+                [8,-1,91.96946665555683,92.57045557340987,1,39,1],
+                [9,-1,8.030533344443171,92.57045557340987,1,39,1],
+                [10,-1,91.96946665555683,7.429544426590127,1,39,1],
+                [11,-1,8.030533344443171,7.429544426590127,1,39,1],
+                [12,0,50.96885903166991,77.27697102235437,2.6094379124341005,42,5],
+                [13,-1,22.723028977645626,50.96885903166989,2.6094379124341005,21,5],
+                [14,-1,77.27697102235437,49.031140968330114,2.6094379124341005,21,5],
+                [15,1,49.03114096833009,22.723028977645626,2.6094379124341005,42,5],
+                [16,0,40.46054139221239,83.00689402211924,2.09861228866811,34,3],
+                [17,-1,17.753101395709265,61.857227918940225,2.09861228866811,26,3],
+                [18,-1,82.24689860429075,38.14277208105978,2.09861228866811,26,3],
+                [19,1,59.539458607787616,16.993105977880766,2.09861228866811,34,3],
+                [20,0,62.911557458540095,82.7496617574989,2.09861228866811,28,3],
+                [21,1,16.416806089925736,39.44453942103334,2.09861228866811,5,3],
+                [22,0,83.58319391007427,60.55546057896667,2.09861228866811,5,3],
+                [23,1,37.088442541459905,17.2503382425011,2.09861228866811,28,3],
+                [24,-1,79.55293278988454,91.12523799059,2.09861228866811,29,3],
+                [25,-1,20.447067210115463,91.12523799059,2.09861228866811,29,3],
+                [26,-1,79.55293278988454,8.874762009410006,2.09861228866811,29,3],
+                [27,-1,20.447067210115463,8.874762009410006,2.09861228866811,29,3],
+                [28,-1,49.53172621267154,88.72982925083585,1,21,1],
+                [29,-1,11.400995945180291,53.21494014171512,1,21,1],
+                [30,-1,88.59900405481972,46.78505985828489,1,21,1],
+                [31,-1,50.468273787328464,11.270170749164151,1,21,1],
+            ],
+            "fleets": [], "player": 0, "angular_velocity": 0.039468093957379685,
+            "initial_planets": [
+                [0,-1,91.95876513637724,76.61005433633235,2.6094379124341005,56,5],
+                [1,-1,8.041234863622762,76.61005433633235,2.6094379124341005,56,5],
+                [2,-1,91.95876513637724,23.389945663667646,2.6094379124341005,56,5],
+                [3,-1,8.041234863622762,23.389945663667646,2.6094379124341005,56,5],
+                [4,-1,58.21341496703934,98.03656470846852,1.6931471805599454,29,2],
+                [5,-1,41.78658503296066,98.03656470846852,1.6931471805599454,29,2],
+                [6,-1,58.21341496703934,1.963435291531482,1.6931471805599454,29,2],
+                [7,-1,41.78658503296066,1.963435291531482,1.6931471805599454,29,2],
+                [8,-1,91.96946665555683,92.57045557340987,1,39,1],
+                [9,-1,8.030533344443171,92.57045557340987,1,39,1],
+                [10,-1,91.96946665555683,7.429544426590127,1,39,1],
+                [11,-1,8.030533344443171,7.429544426590127,1,39,1],
+                [12,-1,69.2998942481249,69.29989424812489,2.6094379124341005,21,5],
+                [13,-1,30.7001057518751,69.29989424812489,2.6094379124341005,21,5],
+                [14,-1,69.2998942481249,30.700105751875114,2.6094379124341005,21,5],
+                [15,-1,30.7001057518751,30.700105751875114,2.6094379124341005,21,5],
+                [16,-1,65.51560671929033,80.65488984891996,2.09861228866811,26,3],
+                [17,-1,34.48439328070967,80.65488984891996,2.09861228866811,26,3],
+                [18,-1,65.51560671929033,19.345110151080036,2.09861228866811,26,3],
+                [19,-1,34.48439328070967,19.345110151080036,2.09861228866811,26,3],
+                [20,-1,81.76907114398183,65.16491938271976,2.09861228866811,8,3],
+                [21,-1,18.230928856018167,65.16491938271976,2.09861228866811,8,3],
+                [22,-1,81.76907114398183,34.83508061728024,2.09861228866811,8,3],
+                [23,-1,18.230928856018167,34.83508061728024,2.09861228866811,8,3],
+                [24,-1,79.55293278988454,91.12523799059,2.09861228866811,29,3],
+                [25,-1,20.447067210115463,91.12523799059,2.09861228866811,29,3],
+                [26,-1,79.55293278988454,8.874762009410006,2.09861228866811,29,3],
+                [27,-1,20.447067210115463,8.874762009410006,2.09861228866811,29,3],
+                [28,-1,76.05407808369601,78.66014601057486,1,21,1],
+                [29,-1,23.945921916303988,78.66014601057486,1,21,1],
+                [30,-1,76.05407808369601,21.339853989425137,1,21,1],
+                [31,-1,23.945921916303988,21.339853989425137,1,21,1],
+            ],
+            "next_fleet_id": 6, "comets": [], "comet_planet_ids": [],
+        }
+        h, moves = run(OBS)
+
+        planet_by_id = {p.id: p for p in h.planets}
+        move_targets = []
+        for m in moves:
+            src = planet_by_id[m.planet_id]
+            target = h.first_planet_hit(src.x, src.y, m.angle, m.ships, src)
+            if target is not None:
+                move_targets.append(target.id)
+
+        self.assertIn(
+            14, move_targets,
+            f"P14 (prod=5) should be attacked this turn; actual targets={move_targets}. "
+            "Before fix: Phase 1 used src.x/src.y (scene_step=19 position) while Phase 2 "
+            "used orbital position at launch_turn. For orbiting planets the mismatch caused "
+            "arrival2 != latest_arrival in Phase 2, discarding the source and returning {}. "
+            "The DFS could not find P14->P28 and chose P28->P14 instead, emitting P16->P28.",
+        )
+        self.assertNotIn(
+            28, move_targets,
+            f"P28 (prod=1) should NOT be attacked this turn in preference to P14 (prod=5); "
+            f"actual targets={move_targets}.",
+        )
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=0)

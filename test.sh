@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
+
 python3 hellburner_tests.py "$@"
+python3 hellburner_integration.py "$@"

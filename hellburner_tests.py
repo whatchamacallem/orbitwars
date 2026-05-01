@@ -11,7 +11,7 @@ sys.path.insert(0, '/home/t/orbitwars')
 
 from hellburner import (
     Hellburner, WarchestFleet, WarchestState, Assignment,
-    warchest_copy, fleet_speed, UNIFIED_LOOK_AHEAD, LOOK_AHEAD,
+    warchest_state_copy, fleet_speed, WARCHEST_LOOK_AHEAD, ROTATION_LOOK_AHEAD,
     MAX_DISTANCE, GARRISON_SIZE, REINFORCEMENT_SIZE,
 )
 
@@ -477,7 +477,7 @@ class TestWarchestAssignFleet(unittest.TestCase):
         obs = make_obs(planets, angular_velocity=angular_velocity)
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         return h, initial, horizon
 
     def test_single_source_wins(self):
@@ -586,7 +586,7 @@ class TestWarchestUpperBound(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         cands = h.warchest_candidates(initial, horizon)
         ub = h.warchest_upper_bound(initial, cands, horizon)
         base = h.warchest_score(initial, horizon)
@@ -599,7 +599,7 @@ class TestWarchestUpperBound(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         cands = h.warchest_candidates(initial, horizon)
         ub = h.warchest_upper_bound(initial, cands, horizon)
         base = h.warchest_score(initial, horizon)
@@ -612,7 +612,7 @@ class TestWarchestUpperBound(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         ub = h.warchest_upper_bound(initial, [], horizon)
         base = h.warchest_score(initial, horizon)
         self.assertAlmostEqual(ub, base)
@@ -630,7 +630,7 @@ class TestWarchestEarliestCapture(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         ec = h.warchest_earliest_capture(initial, h.planets[1], horizon)
         self.assertTrue(math.isfinite(ec))
         self.assertAlmostEqual(ec, 8.0)
@@ -641,7 +641,7 @@ class TestWarchestEarliestCapture(unittest.TestCase):
                         [1, 1, 90.0, 50.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         ec = h.warchest_earliest_capture(initial, h.planets[1], horizon)
         self.assertEqual(ec, math.inf)
 
@@ -653,7 +653,7 @@ class TestWarchestEarliestCapture(unittest.TestCase):
                         [2, 1, 30.0, 50.0, 2.0, 100, 3]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         ec = h.warchest_earliest_capture(initial, h.planets[2], horizon)
         self.assertTrue(math.isfinite(ec))
 
@@ -670,7 +670,7 @@ class TestWarchestCandidates(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         cands = h.warchest_candidates(initial, horizon)
         self.assertIn(h.planets[1], cands)
 
@@ -680,7 +680,7 @@ class TestWarchestCandidates(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         cands = h.warchest_candidates(initial, horizon)
         for p in cands:
             self.assertNotEqual(initial.ownership.get(p.id), h.player)
@@ -696,7 +696,7 @@ class TestWarchestCandidates(unittest.TestCase):
         )
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         cands = h.warchest_candidates(initial, horizon)
         self.assertGreater(len(cands), 0)
 
@@ -709,7 +709,7 @@ class TestWarchestCandidates(unittest.TestCase):
                        comet_ids=[2])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         cands = h.warchest_candidates(initial, horizon)
         self.assertNotIn(2, [p.id for p in cands])
 
@@ -720,7 +720,7 @@ class TestWarchestCandidates(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 99, 1]])  # production=1, huge garrison
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         cands = h.warchest_candidates(initial, horizon)
         self.assertNotIn(h.planets[1], cands)
 
@@ -737,10 +737,10 @@ class TestWarchestExecute(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         p1 = h.planets[1]
         assignment = h.warchest_assign_fleet(initial, p1, horizon)
-        state = warchest_copy(initial)
+        state = warchest_state_copy(initial)
         after = h.warchest_execute(state, p1, assignment)
         self.assertEqual(after.ownership[p1.id], h.player)
         arrival = list(assignment.values())[0].arrival_turn
@@ -752,10 +752,10 @@ class TestWarchestExecute(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         p1 = h.planets[1]
         assignment = h.warchest_assign_fleet(initial, p1, horizon)
-        state = warchest_copy(initial)
+        state = warchest_state_copy(initial)
         h.warchest_execute(state, p1, assignment)
         self.assertLess(state.garrison[0], initial.garrison[0])
 
@@ -766,10 +766,10 @@ class TestWarchestExecute(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         p1 = h.planets[1]
         assignment = h.warchest_assign_fleet(initial, p1, horizon)
-        state = warchest_copy(initial)
+        state = warchest_state_copy(initial)
         h.warchest_execute(state, p1, assignment)
         for src_id in assignment:
             self.assertIn(src_id, state.committed_ids)
@@ -783,7 +783,7 @@ class TestWarchestExecute(unittest.TestCase):
         initial = h.warchest_initial_state()
         p1 = h.planets[1]
         assignment = {0: Assignment(1, 0, 8)}   # 1 ship cannot beat garrison 20+
-        state = warchest_copy(initial)
+        state = warchest_state_copy(initial)
         after = h.warchest_execute(state, p1, assignment)
         self.assertEqual(after.turn, 8)
         self.assertEqual(after.ownership[p1.id], 1)
@@ -857,7 +857,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         base_score = h.warchest_score(initial, horizon)
         cands = h.warchest_candidates(initial, horizon)
         best = [base_score, []]
@@ -877,7 +877,7 @@ class TestWarchestEmitMoves(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         p1 = h.planets[1]
         assignment = h.warchest_assign_fleet(initial, p1, horizon)
         src_id = list(assignment.keys())[0]
@@ -893,7 +893,7 @@ class TestWarchestEmitMoves(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         p1 = h.planets[1]
         assignment = h.warchest_assign_fleet(initial, p1, horizon)
         moves = h.warchest_emit_moves([(p1, assignment)])
@@ -981,7 +981,7 @@ class TestDrainComets(unittest.TestCase):
         )
         h, _ = run(obs)
         initial = h.warchest_initial_state()
-        horizon = min(h.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(h.scene_step + WARCHEST_LOOK_AHEAD, 500)
         cands = h.warchest_candidates(initial, horizon)
         self.assertNotIn(2, [p.id for p in cands])
 
@@ -1027,7 +1027,7 @@ class TestBuildDestinationList(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 19. warchest_copy
+# 19. warchest_state_copy
 # ---------------------------------------------------------------------------
 
 class TestWarchestCopy(unittest.TestCase):
@@ -1037,7 +1037,7 @@ class TestWarchestCopy(unittest.TestCase):
         state = make_warchest_state(
             garrison={0: 50.0}, production={0: 3.0}, ownership={0: 0},
         )
-        copy = warchest_copy(state)
+        copy = warchest_state_copy(state)
         copy.garrison[0] = 999.0
         self.assertAlmostEqual(state.garrison[0], 50.0)
 
@@ -1047,7 +1047,7 @@ class TestWarchestCopy(unittest.TestCase):
         state = make_warchest_state(
             garrison={0: 50.0}, production={0: 3.0}, ownership={0: 0},
         )
-        copy = warchest_copy(state)
+        copy = warchest_state_copy(state)
         self.assertIs(copy.production, state.production)
 
     def test_copy_shares_enemy_fleets_reference(self):
@@ -1060,7 +1060,7 @@ class TestWarchestCopy(unittest.TestCase):
             garrison={0: 50.0}, production={0: 3.0}, ownership={0: 0},
             enemy=[ef],
         )
-        copy = warchest_copy(state)
+        copy = warchest_state_copy(state)
         self.assertIs(copy.enemy_fleets, state.enemy_fleets)
 
     def test_copy_independent_committed_ids(self):
@@ -1070,7 +1070,7 @@ class TestWarchestCopy(unittest.TestCase):
             garrison={0: 50.0}, production={0: 3.0}, ownership={0: 0},
         )
         state.committed_ids.add(0)
-        copy = warchest_copy(state)
+        copy = warchest_state_copy(state)
         copy.committed_ids.add(1)
         self.assertNotIn(1, state.committed_ids)
 
@@ -1123,4 +1123,4 @@ class TestAgentIntegration(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=0)

@@ -85,9 +85,9 @@ class Visualizer:
             {'x': x, 'y': y, 'text': str(text), 'color': color, 'font': font}
         )
 
-    def save(self, path):
+    def save(self, path, seed=None):
         """Write the interactive HTML visualizer to path."""
-        html = _build_html(self._frames)
+        html = _build_html(self._frames, seed=seed)
         with open(path, 'w') as f:
             f.write(html)
         print(f"Visualizer saved to {path} ({len(self._frames)} frames)")
@@ -121,8 +121,9 @@ def _serialize(obj, _key=None):
     return obj
 
 
-def _build_html(frames):
+def _build_html(frames, seed=None):
     frames_json = json.dumps(frames)
+    seed_js = 'null' if seed is None else str(seed)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -154,6 +155,11 @@ def _build_html(frames):
   .fleet-owner-3 {{ color: #f4f; }}
   #debugText {{ white-space: pre-wrap; color: #ff8; }}
   #playBtn.playing {{ color: #fa0; }}
+  #obsPanel {{ width: min(1200px, 98vw); margin: 8px 0 12px; }}
+  #obsPanel h3 {{ display: flex; align-items: center; gap: 8px; }}
+  #copyObsBtn {{ font-size: 0.7rem; padding: 2px 8px; }}
+  #copyObsBtn.copied {{ color: #4f8; border-color: #4f8; }}
+  #obsText {{ white-space: pre-wrap; color: #9cf; font-size: 0.72rem; max-height: 260px; overflow-y: auto; margin: 0; }}
 </style>
 </head>
 <body>
@@ -169,14 +175,19 @@ def _build_html(frames):
 <div id="main">
   <canvas id="canvas" width="640" height="640"></canvas>
   <div id="sidebar">
-    <div class="panel" id="metaPanel"><h3>Status (⯇⯈ step, ⯅⯆ speed)</h3><div id="metaContent"></div></div>
+    <div class="panel" id="metaPanel"><h3>Status (⯇⯈ step, ⯅⯆ speed, space is pause)</h3><div id="metaContent"></div></div>
     <div class="panel" id="textPanel" style="display:none"><h3>Debug Text</h3><pre id="debugText"></pre></div>
     <div class="panel"><h3>Planets</h3><div id="planetContent"></div></div>
     <div class="panel"><h3>Fleets</h3><div id="fleetContent"></div></div>
   </div>
 </div>
+<div class="panel" id="obsPanel">
+  <h3>Obs (raw) <button id="copyObsBtn">Copy</button></h3>
+  <pre id="obsText"></pre>
+</div>
 <script>
 const FRAMES = {frames_json};
+const SEED = {seed_js};
 const COLORS = ['#44aaff','#ff8844','#44ff88','#ff44ff'];
 const NEUTRAL_COLOR = '#666';
 const COMET_COLOR = '#fc8';
@@ -355,7 +366,8 @@ function drawFrame(idx) {{
   document.getElementById('metaContent').innerHTML =
     `<div class="item">Step: <b>${{step}}</b> &nbsp; Player: <b>${{player}}</b></div>
      <div class="item">Angular vel: ${{av}} &nbsp; Overage: ${{ot}}s</div>
-     <div class="item">Comets: ${{(obs.comet_planet_ids||[]).join(', ') || 'none'}}</div>`;
+     <div class="item">Comets: ${{(obs.comet_planet_ids||[]).join(', ') || 'none'}}</div>
+     ${{SEED !== null ? `<div class="item">Seed: <b>${{SEED}}</b></div>` : ''}}`;
 
   // Debug texts
   const texts = frame.texts || [];
@@ -385,6 +397,9 @@ function drawFrame(idx) {{
     fHtml += `<div class="item ${{cls}}">[F${{id}}] owner=${{owner}} ships=${{ships}} from=P${{from_id}} (${{x.toFixed(1)}},${{y.toFixed(1)}}) ang=${{angle.toFixed(2)}}</div>`;
   }}
   document.getElementById('fleetContent').innerHTML = fHtml || '<div class="item">none</div>';
+
+  // Raw obs dump
+  document.getElementById('obsText').textContent = JSON.stringify(obs, null, 2);
 }}
 
 function go(idx) {{
@@ -435,6 +450,16 @@ speedSlider.oninput = () => {{
   const fps = parseInt(speedSlider.value);
   speedLabel.textContent = fps + ' fps';
   if (playing) {{ stopPlay(); startPlay(); }}
+}};
+
+document.getElementById('copyObsBtn').onclick = function() {{
+  const text = document.getElementById('obsText').textContent;
+  navigator.clipboard.writeText(text).then(() => {{
+    const btn = this;
+    btn.textContent = 'Copy';
+    btn.classList.add('copied');
+    setTimeout(() => {{ btn.textContent = 'Copy'; btn.classList.remove('copied'); }}, 1500);
+  }});
 }};
 
 go(0);

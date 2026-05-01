@@ -14,8 +14,29 @@ from kaggle_environments.envs.orbit_wars.orbit_wars import (
 sys.path.insert(0, '/home/t/orbitwars')
 from visualizer import Visualizer
 viz = Visualizer()
-def viz_save():
-    viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html')
+def viz_save(seed=None):
+    viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html', seed=seed)
+
+
+SHIP_SPEED_MAX      = 6.0    # matches configuration.shipSpeed default
+
+MAX_DISTANCE        = 35
+ROTATION_LOOK_AHEAD = 10
+REINFORCEMENT_SIZE  = 10
+GARRISON_SIZE       = 10
+
+# Warchest
+TIME_BUDGET_S       = 0.800  # hard wall; return best-found-so-far if exceeded
+DFS_EARLY_EXIT_S    = 0.100  # soft cutoff inside DFS loop (leaves room for emit/reinforce)
+WARCHEST_LOOK_AHEAD = 50     # horizon = min(scene_step + WARCHEST_LOOK_AHEAD, 500)
+MAX_CANDIDATES      = 6      # hard cap on DFS branching factor (reduce to 4 if timing spikes)
+ENEMY_WEIGHT        = 0.8    # penalty multiplier for enemy production (tune toward 1.0)
+
+
+@dataclass(slots=True)
+class Pos:
+    x: float
+    y: float
 
 @dataclass(slots=True, eq=False)
 class HPlanet:
@@ -35,13 +56,15 @@ class OrbitalEntry:
     initial_angle: float
 
 @dataclass(slots=True)
-class Pos:
-    x: float
-    y: float
+class GraphEdge:
+    planet: HPlanet
+    travel: float
 
 @dataclass(slots=True)
-class Edge:
-    planet: HPlanet
+class Intercept:
+    angle: float
+    x: float
+    y: float
     travel: float
 
 @dataclass(slots=True)
@@ -67,34 +90,9 @@ class Assignment:
     arrival_turn: int
 
 @dataclass(slots=True)
-class Intercept:
-    angle: float
-    x: float
-    y: float
-    travel: float
-
-@dataclass(slots=True)
-class ArrowEndpoints:
-    sx: float
-    sy: float
-    ex: float
-    ey: float
-
-@dataclass(slots=True)
 class OwnerShips:
     owner: int
     ships: float
-
-# HPlanet -> OrbitalEntry if the planet orbits the sun, else None
-OrbitalInfo = dict[HPlanet, OrbitalEntry | None]
-# HPlanets rotated by LOOK_AHEAD
-FuturePos = dict[HPlanet, Pos]
-# dst -> [Edge(src, travel_steps)]: directed graph; src departs now, dst is its intercept position
-ProximityGraph = dict[HPlanet, list[Edge]]
-# HPlanet -> [Arrival(...)]
-DestinationList = dict[HPlanet, list[Arrival]]
-FleetOrders = list[FleetOrder]
-
 
 @dataclass(slots=True)
 class WarchestFleet:
@@ -116,25 +114,15 @@ class WarchestState:
     enemy_fleets: list[WarchestFleet]
     committed_ids: set[int]       # planet IDs already used as sources this planning pass
 
-SHIP_SPEED_MAX = 6.0  # matches configuration.shipSpeed default
-
-MAX_DISTANCE = 35
-LOOK_AHEAD = 10
-REINFORCEMENT_SIZE = 10
-GARRISON_SIZE = 10
-
-# Search budget
-TIME_BUDGET_S       = 0.800  # hard wall; return best-found-so-far if exceeded
-DFS_EARLY_EXIT_S    = 0.080  # soft cutoff inside DFS loop (leaves room for emit/reinforce)
-
-# Lookahead
-UNIFIED_LOOK_AHEAD  = 25     # horizon = min(scene_step + UNIFIED_LOOK_AHEAD, 500)
-
-# Candidate generation
-MAX_CANDIDATES      = 6      # hard cap on DFS branching factor (reduce to 4 if timing spikes)
-
-# Scoring
-ENEMY_WEIGHT        = 0.8    # penalty multiplier for enemy production (tune toward 1.0)
+# HPlanet -> OrbitalEntry if the planet orbits the sun, else None
+OrbitalInfo = dict[HPlanet, OrbitalEntry | None]
+# HPlanets rotated by ROTATION_LOOK_AHEAD
+FuturePos = dict[HPlanet, Pos]
+# dst -> [GraphEdge(src, travel_steps)]: directed graph; src departs now, dst is its intercept position
+ProximityGraph = dict[HPlanet, list[GraphEdge]]
+# HPlanet -> [Arrival(...)]
+DestinationList = dict[HPlanet, list[Arrival]]
+FleetOrders = list[FleetOrder]
 
 
 def fleet_speed(ships: int | float) -> float:
@@ -142,7 +130,7 @@ def fleet_speed(ships: int | float) -> float:
     return min(SHIP_SPEED_MAX, 1.0 + (SHIP_SPEED_MAX - 1.0) * (math.log(ships) / math.log(1000)) ** 1.5)
 
 
-def warchest_copy(state: 'WarchestState') -> 'WarchestState':
+def warchest_state_copy(state: 'WarchestState') -> 'WarchestState':
     return WarchestState(
         turn=state.turn,
         garrison=dict(state.garrison),
@@ -191,7 +179,7 @@ class Hellburner:
                 self.orbital_info[p] = None
 
     def build_proximity_graph(self) -> None:
-        """Build directed adjacency list: dst -> [Edge(src, travel_steps)].
+        """Build directed adjacency list: dst -> [GraphEdge(src, travel_steps)].
 
         Directed because:
         - src departs from its current position immediately
@@ -206,7 +194,7 @@ class Hellburner:
         for p in self.planets:
             orb = self.orbital_info[p]
             if orb is not None:
-                a = orb.initial_angle + self.angular_velocity * (self.scene_step + 1 + LOOK_AHEAD)
+                a = orb.initial_angle + self.angular_velocity * (self.scene_step + 1 + ROTATION_LOOK_AHEAD)
                 self.future_pos[p] = Pos(cx + orb.r * math.cos(a), cy + orb.r * math.sin(a))
             else:
                 self.future_pos[p] = Pos(p.x, p.y)
@@ -219,13 +207,13 @@ class Hellburner:
                 fp = self.future_pos[dst]
                 travel = distance((src.x, src.y), (fp.x, fp.y))
                 if travel <= MAX_DISTANCE:
-                    self.inbound_edges[dst].append(Edge(src, travel))
+                    self.inbound_edges[dst].append(GraphEdge(src, travel))
 
-        # self.outbound_edges[p] = [Edge(dst, travel)] — keyed by source, complement of the inbound-keyed inbound_edges.
+        # self.outbound_edges[p] = [GraphEdge(dst, travel)] — keyed by source, complement of the inbound-keyed inbound_edges.
         self.outbound_edges = {p: [] for p in self.planets}
         for dst, inbound in self.inbound_edges.items():
             for edge in inbound:
-                self.outbound_edges[edge.planet].append(Edge(dst, edge.travel))
+                self.outbound_edges[edge.planet].append(GraphEdge(dst, edge.travel))
 
     def intercept_planet(
         self,
@@ -480,7 +468,8 @@ class Hellburner:
                 is_cap   = (arr.owner != dest_planet.owner)
                 # Project target garrison to arrival time so garrison_on_arrival is accurate.
                 if is_cap:
-                    garrison_at_arrival = dest_planet.ships + dest_planet.production * math.ceil(arr.travel_time)
+                    prod_during_travel = dest_planet.production * math.ceil(arr.travel_time) if dest_planet.owner != -1 else 0.0
+                    garrison_at_arrival = dest_planet.ships + prod_during_travel
                     gar_on_arr = max(0.0, arr.ships - garrison_at_arrival)
                 else:
                     gar_on_arr = arr.ships
@@ -599,10 +588,17 @@ class Hellburner:
             # candidate's actual intercept time to get a correct turn estimate.
             first_src = candidates[0].planet
             first_ships = int(state.garrison.get(first_src.id, 1)) or 1
-            ic0 = self.intercept_planet(first_src.x, first_src.y, target, first_ships)
+            orb0 = self.orbital_info.get(first_src)
+            if orb0 is not None:
+                _cx = _cy = CENTER
+                _a0 = orb0.initial_angle + self.angular_velocity * state.turn
+                _sx0, _sy0 = _cx + orb0.r * math.cos(_a0), _cy + orb0.r * math.sin(_a0)
+            else:
+                _sx0, _sy0 = first_src.x, first_src.y
+            ic0 = self.intercept_planet(_sx0, _sy0, target, first_ships)
             min_travel = ic0.travel if math.isfinite(ic0.travel) else candidates[0].travel
-            arrival_garrison = (state.garrison.get(target.id, 0.0) +
-                                state.production.get(target.id, 0.0) * math.ceil(min_travel))
+            prod_rate = state.production.get(target.id, 0.0) if state.ownership.get(target.id) != -1 else 0.0
+            arrival_garrison = state.garrison.get(target.id, 0.0) + prod_rate * math.ceil(min_travel)
 
         selected: list[tuple[HPlanet, float, float, int]] = []   # (src, ships_now, angle, arrival_turn_if_launched_now)
         total_ships  = 0.0
@@ -613,10 +609,20 @@ class Hellburner:
             ships = int(state.garrison.get(src.id, 0))
             if ships <= 0:
                 continue
-            ic = self.intercept_planet(src.x, src.y, target, ships)
+            # Use orbital position at state.turn so Phase 1 and Phase 2 (launch_turn=state.turn+delay)
+            # agree on source position when delay=0. Without this, arrival computed here differs from
+            # arrival2 in Phase 2, causing Phase 2 to discard the source (arrival2 != latest_arrival).
+            orb_src = self.orbital_info.get(src)
+            if orb_src is not None:
+                cx = cy = CENTER
+                a_now = orb_src.initial_angle + self.angular_velocity * state.turn
+                sx1, sy1 = cx + orb_src.r * math.cos(a_now), cy + orb_src.r * math.sin(a_now)
+            else:
+                sx1, sy1 = src.x, src.y
+            ic = self.intercept_planet(sx1, sy1, target, ships)
             if not math.isfinite(ic.travel):
                 continue
-            if self.first_planet_hit(src.x, src.y, ic.angle, ships, src) is not target:
+            if self.first_planet_hit(sx1, sy1, ic.angle, ships, src) is not target:
                 continue
             arrival = state.turn + math.ceil(ic.travel)
             if arrival > horizon:
@@ -634,8 +640,9 @@ class Hellburner:
         # needed, latest_arrival is the slowest source's arrival turn, which can be several turns
         # later than min_travel. The target produces ships during those extra turns.
         if state.ownership.get(target.id) != self.player:
+            actual_prod = state.production.get(target.id, 0.0) if state.ownership.get(target.id) != -1 else 0.0
             actual_arrival_garrison = (state.garrison.get(target.id, 0.0) +
-                                       state.production.get(target.id, 0.0) * (latest_arrival - state.turn))
+                                       actual_prod * (latest_arrival - state.turn))
             if total_ships <= actual_arrival_garrison:
                 return {}  # fleet sufficient at min_travel but not at actual latest_arrival
 
@@ -678,7 +685,7 @@ class Hellburner:
             orb = self.orbital_info.get(src)
             if orb is not None:
                 cx = cy = CENTER
-                a  = orb.initial_angle + self.angular_velocity * (launch_turn - 0.5)
+                a  = orb.initial_angle + self.angular_velocity * launch_turn
                 sx, sy = cx + orb.r * math.cos(a), cy + orb.r * math.sin(a)
             else:
                 sx, sy = src.x, src.y
@@ -751,8 +758,8 @@ class Hellburner:
         target_garrison_now = state.garrison.get(target.id, 0.0)
         if is_capture:
             turns_to_arrival = latest_arrival - state.turn
-            target_garrison_at_arrival = (target_garrison_now
-                                          + state.production.get(target.id, 0.0) * turns_to_arrival)
+            target_prod = state.production.get(target.id, 0.0) if state.ownership.get(target.id) != -1 else 0.0
+            target_garrison_at_arrival = target_garrison_now + target_prod * turns_to_arrival
             garrison_on_arrival = max(0.0, total_ships - target_garrison_at_arrival)
             if garrison_on_arrival <= 0:
                 # Attack fails: ships were deducted from sources but don't capture anything.
@@ -918,7 +925,7 @@ class Hellburner:
             if not enemy_inbound:
                 continue
             # Quick simulation: will we lose this planet?
-            trial = warchest_copy(initial)
+            trial = warchest_state_copy(initial)
             last_enemy_arrival = max(f.arrival_turn for f in enemy_inbound)
             self.warchest_advance(trial, min(last_enemy_arrival, horizon))
             if trial.ownership.get(p.id) != self.player:
@@ -978,7 +985,7 @@ class Hellburner:
             if not assignment:
                 continue
 
-            next_state = self.warchest_execute(warchest_copy(state), planet, assignment)
+            next_state = self.warchest_execute(warchest_state_copy(state), planet, assignment)
             self.warchest_dfs(
                 next_state,
                 remaining[:i] + remaining[i+1:],
@@ -989,6 +996,15 @@ class Hellburner:
     def run_unified_search(self, horizon: int) -> FleetOrders:
         self._warchest_committed_ids = set()
         initial    = self.warchest_initial_state()
+
+        # Pre-advance past all in-flight fleet arrivals so the DFS baseline and every
+        # branch are scored in the same post-arrival reference frame. Without this,
+        # warchest_score(initial) is inflated by unresolved fleet bonuses, causing the
+        # DFS to always prefer the empty sequence over any profitable plan.
+        all_arrivals = [f.arrival_turn for f in initial.friendly_fleets + initial.enemy_fleets]
+        if all_arrivals:
+            self.warchest_advance(initial, max(all_arrivals))
+
         candidates = self.warchest_candidates(initial, horizon)
 
         best = [self.warchest_score(initial, horizon), []]
@@ -1030,6 +1046,13 @@ class Hellburner:
 
     # ------------------------------------------------------------------
     # viz
+
+    @dataclass(slots=True)
+    class ArrowEndpoints:
+        sx: float
+        sy: float
+        ex: float
+        ey: float
 
     @staticmethod
     def viz_arrow_endpoints(
@@ -1129,7 +1152,7 @@ class Hellburner:
         self.build_destination_list()
         self.build_reinforcement_targets()
 
-        horizon = min(self.scene_step + UNIFIED_LOOK_AHEAD, 500)
+        horizon = min(self.scene_step + WARCHEST_LOOK_AHEAD, 500)
         moves   = self.run_unified_search(horizon)
 
         reinforcement_orders = self.send_reinforcements()
