@@ -17,22 +17,83 @@ viz = Visualizer()
 def viz_save():
     viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html')
 
+@dataclass(slots=True, eq=False)
 class HPlanet:
-    def __init__(self, id, owner, x, y, radius, ships, production):
-        self.id = id; self.owner = owner; self.x = x; self.y = y
-        self.radius = radius; self.ships = ships; self.production = production
-        self.reinforcement_target: 'HPlanet | None' = None  # nearest owned planet on shortest path to front
+    id: int
+    owner: int
+    x: float
+    y: float
+    radius: float
+    ships: float
+    production: float
+    # nearest owned planet on shortest path to front
+    reinforcement_target: 'HPlanet | None' = field(default=None)
 
-# HPlanet -> (orbital_radius, initial_angle) if the planet orbits the sun, else None
-OrbitalInfo = dict[HPlanet, tuple[float, float] | None]
+@dataclass(slots=True)
+class OrbitalEntry:
+    r: float
+    initial_angle: float
+
+@dataclass(slots=True)
+class Pos:
+    x: float
+    y: float
+
+@dataclass(slots=True)
+class Edge:
+    planet: HPlanet
+    travel: float
+
+@dataclass(slots=True)
+class Arrival:
+    owner: int
+    ships: float
+    travel_time: float
+    src_x: float
+    src_y: float
+    arrival_x: float
+    arrival_y: float
+
+@dataclass(slots=True)
+class FleetOrder:
+    planet_id: int
+    angle: float
+    ships: int
+
+@dataclass(slots=True)
+class Assignment:
+    ships: float
+    launch_turn: int
+    arrival_turn: int
+
+@dataclass(slots=True)
+class Intercept:
+    angle: float
+    x: float
+    y: float
+    travel: float
+
+@dataclass(slots=True)
+class ArrowEndpoints:
+    sx: float
+    sy: float
+    ex: float
+    ey: float
+
+@dataclass(slots=True)
+class OwnerShips:
+    owner: int
+    ships: float
+
+# HPlanet -> OrbitalEntry if the planet orbits the sun, else None
+OrbitalInfo = dict[HPlanet, OrbitalEntry | None]
 # HPlanets rotated by LOOK_AHEAD
-FuturePos = dict[HPlanet, tuple[float, float]]
-# dst -> [(src, travel_steps)]: directed graph; src departs now, dst is its intercept position
-ProximityGraph = dict[HPlanet, list[tuple[HPlanet, float]]]
-# HPlanet -> [(owner, ships, travel_time, src_x, src_y, arrival_x, arrival_y)]
-DestinationList = dict[HPlanet, list[tuple[int, float, float, float, float, float, float]]]
-# [planet_id, angle, ships]
-FleetOrders = list[list]
+FuturePos = dict[HPlanet, Pos]
+# dst -> [Edge(src, travel_steps)]: directed graph; src departs now, dst is its intercept position
+ProximityGraph = dict[HPlanet, list[Edge]]
+# HPlanet -> [Arrival(...)]
+DestinationList = dict[HPlanet, list[Arrival]]
+FleetOrders = list[FleetOrder]
 
 
 @dataclass(slots=True)
@@ -114,7 +175,7 @@ class Hellburner:
         self._warchest_committed_ids: set[int] = set()
 
     def build_orbital_info(self, initial_planets: list[Any]) -> None:
-        """Return dict mapping Planet -> (r, initial_angle) if orbiting, else None."""
+        """Return dict mapping Planet -> OrbitalEntry if orbiting, else None."""
         cx = cy = CENTER
         ip_by_id = {ip[0]: ip for ip in initial_planets}
         self.orbital_info = {}
@@ -125,12 +186,12 @@ class Hellburner:
             r = distance((p.x, p.y), (cx, cy))
             if r + p.radius < ROTATION_RADIUS_LIMIT and p.id in ip_by_id:
                 ip = ip_by_id[p.id]
-                self.orbital_info[p] = (r, math.atan2(ip[3] - cy, ip[2] - cx))
+                self.orbital_info[p] = OrbitalEntry(r=r, initial_angle=math.atan2(ip[3] - cy, ip[2] - cx))
             else:
                 self.orbital_info[p] = None
 
     def build_proximity_graph(self) -> None:
-        """Build directed adjacency list: dst -> [(src, travel_steps)].
+        """Build directed adjacency list: dst -> [Edge(src, travel_steps)].
 
         Directed because:
         - src departs from its current position immediately
@@ -145,34 +206,34 @@ class Hellburner:
         for p in self.planets:
             orb = self.orbital_info[p]
             if orb is not None:
-                r, ia = orb
-                a = ia + self.angular_velocity * (self.scene_step + 1 + LOOK_AHEAD)
-                self.future_pos[p] = (cx + r * math.cos(a), cy + r * math.sin(a))
+                a = orb.initial_angle + self.angular_velocity * (self.scene_step + 1 + LOOK_AHEAD)
+                self.future_pos[p] = Pos(cx + orb.r * math.cos(a), cy + orb.r * math.sin(a))
             else:
-                self.future_pos[p] = (p.x, p.y)
+                self.future_pos[p] = Pos(p.x, p.y)
 
         self.inbound_edges = {p: [] for p in self.planets}
         for src in self.planets:
             for dst in self.planets:
                 if dst is src:
                     continue
-                travel = distance((src.x, src.y), self.future_pos[dst])
+                fp = self.future_pos[dst]
+                travel = distance((src.x, src.y), (fp.x, fp.y))
                 if travel <= MAX_DISTANCE:
-                    self.inbound_edges[dst].append((src, travel))
+                    self.inbound_edges[dst].append(Edge(src, travel))
 
-        # self.outbound_edges[p] = [(dst, travel)] — keyed by source, complement of the inbound-keyed inbound_edges.
+        # self.outbound_edges[p] = [Edge(dst, travel)] — keyed by source, complement of the inbound-keyed inbound_edges.
         self.outbound_edges = {p: [] for p in self.planets}
         for dst, inbound in self.inbound_edges.items():
-            for src, travel in inbound:
-                self.outbound_edges[src].append((dst, travel))
+            for edge in inbound:
+                self.outbound_edges[edge.planet].append(Edge(dst, edge.travel))
 
     def intercept_planet(
         self,
         sx: float, sy: float, target: HPlanet, ships: int | float,
         tol: float = 1e-6, max_iters: int = 30,
-    ) -> tuple[float, float, float, float]:
+    ) -> Intercept:
         """Aim angle from (sx, sy) toward where target will be when a fleet arrives.
-        Returns (angle, intercept_x, intercept_y, travel_steps).
+        Returns Intercept(angle, x, y, travel).
         """
         speed = fleet_speed(ships)
         orb = self.orbital_info[target]
@@ -181,12 +242,11 @@ class Hellburner:
             travel = distance((sx, sy), (tx, ty)) / speed
         else:
             cx = cy = CENTER
-            r, ia = orb
             # Seed: straight-line travel time to the planet's current position.
             travel = distance((sx, sy), (target.x, target.y)) / speed
             for _ in range(max_iters):
-                a = ia + self.angular_velocity * (self.scene_step + travel - 0.5)
-                new_tx, new_ty = cx + r * math.cos(a), cy + r * math.sin(a)
+                a = orb.initial_angle + self.angular_velocity * (self.scene_step + travel - 0.5)
+                new_tx, new_ty = cx + orb.r * math.cos(a), cy + orb.r * math.sin(a)
                 new_travel = distance((sx, sy), (new_tx, new_ty)) / speed
                 # Damp update: average old and new travel to suppress oscillation.
                 new_travel = 0.5 * (travel + new_travel - 0.5)
@@ -196,12 +256,12 @@ class Hellburner:
                 travel = new_travel
             else:
                 # Diverged: fleet too slow to catch this planet's orbital speed.
-                return 0.0, target.x, target.y, math.inf
+                return Intercept(0.0, target.x, target.y, math.inf)
             # Recompute final position from converged travel so tx/ty/angle are consistent.
-            a = ia + self.angular_velocity * (self.scene_step + travel - 0.5)
-            tx, ty = cx + r * math.cos(a), cy + r * math.sin(a)
+            a = orb.initial_angle + self.angular_velocity * (self.scene_step + travel - 0.5)
+            tx, ty = cx + orb.r * math.cos(a), cy + orb.r * math.sin(a)
         angle = math.atan2(ty - sy, tx - sx)
-        return angle, tx, ty, travel
+        return Intercept(angle, tx, ty, travel)
 
     def first_planet_hit(self, sx: float, sy: float, angle: float, ships: int | float, source: HPlanet) -> HPlanet | None:
         """Return the first planet a fleet launched from (sx, sy) at `angle` would hit, or None.
@@ -211,15 +271,15 @@ class Hellburner:
         for planet in self.all_bodies:   # ← was self.planets; CRITICAL: comets must block paths
             if planet is source:
                 continue
-            needed_angle, px, py, travel = self.intercept_planet(sx, sy, planet, ships)
-            dist = distance((sx, sy), (px, py))
+            ic = self.intercept_planet(sx, sy, planet, ships)
+            dist = distance((sx, sy), (ic.x, ic.y))
             if dist < planet.radius:
                 half_cone = math.pi
             else:
                 half_cone = math.asin(min(1.0, planet.radius / dist))
-            delta = abs(math.atan2(math.sin(angle - needed_angle), math.cos(angle - needed_angle)))
-            if math.isfinite(travel) and delta <= half_cone and travel < best_t:
-                best_t = travel
+            delta = abs(math.atan2(math.sin(angle - ic.angle), math.cos(angle - ic.angle)))
+            if math.isfinite(ic.travel) and delta <= half_cone and ic.travel < best_t:
+                best_t = ic.travel
                 best = planet
         if best is None:
             return None
@@ -231,36 +291,36 @@ class Hellburner:
 
     def build_destination_list(self) -> None:
         """For each fleet, find the first planet it is on an interception course for.
-        Populates self.destination_list: Planet -> list of (owner, ships, t, src_x, src_y, arrival_x, arrival_y).
-        t is continuous time in turns.
+        Populates self.destination_list: Planet -> list of Arrival.
+        travel_time is continuous time in turns.
         """
         self.destination_list = defaultdict(list)
         for fleet in self.fleets:
             best = None
             best_t = float('inf')
             for planet in self.all_bodies:   # ← was self.planets; CRITICAL: comets must block paths
-                needed_angle, px, py, travel = self.intercept_planet(
-                    fleet.x, fleet.y, planet, fleet.ships
-                )
-                dist = distance((fleet.x, fleet.y), (px, py))
+                ic = self.intercept_planet(fleet.x, fleet.y, planet, fleet.ships)
+                dist = distance((fleet.x, fleet.y), (ic.x, ic.y))
                 if dist < planet.radius:
                     half_cone = math.pi
                 else:
                     half_cone = math.asin(min(1.0, planet.radius / dist))
-                delta = abs(math.atan2(math.sin(fleet.angle - needed_angle),
-                                       math.cos(fleet.angle - needed_angle)))
-                if math.isfinite(travel) and delta <= half_cone and travel < best_t:
-                    best_t = travel
-                    best = (planet, travel, px, py)
+                delta = abs(math.atan2(math.sin(fleet.angle - ic.angle),
+                                       math.cos(fleet.angle - ic.angle)))
+                if math.isfinite(ic.travel) and delta <= half_cone and ic.travel < best_t:
+                    best_t = ic.travel
+                    best = (planet, ic.travel, ic.x, ic.y)
             if best is not None:
                 planet, travel, px, py = best
-                self.destination_list[planet].append((fleet.owner, fleet.ships, travel, fleet.x, fleet.y, px, py))
+                self.destination_list[planet].append(
+                    Arrival(fleet.owner, fleet.ships, travel, fleet.x, fleet.y, px, py)
+                )
 
     def build_reinforcement_targets(self) -> None:
         front_line = {
             p for p in self.owned_planets
-            if any(src.owner != self.player for src, _ in self.inbound_edges[p])
-            or any(dst.owner != self.player for dst, _ in self.outbound_edges[p])
+            if any(e.planet.owner != self.player for e in self.inbound_edges[p])
+            or any(e.planet.owner != self.player for e in self.outbound_edges[p])
         }
 
         # BFS hop-distance from every owned node to nearest frontline planet,
@@ -270,11 +330,11 @@ class Hellburner:
         head = 0
         while head < len(queue):
             node = queue[head]; head += 1
-            for src, _ in self.inbound_edges[node]:
-                if src.owner != self.player or src in hops_to_front:
+            for edge in self.inbound_edges[node]:
+                if edge.planet.owner != self.player or edge.planet in hops_to_front:
                     continue
-                hops_to_front[src] = hops_to_front[node] + 1
-                queue.append(src)
+                hops_to_front[edge.planet] = hops_to_front[node] + 1
+                queue.append(edge.planet)
 
         for p in self.owned_planets:
             p.reinforcement_target = None
@@ -282,8 +342,8 @@ class Hellburner:
                 continue
 
             direct_front = [
-                dst for dst, _ in self.outbound_edges[p]
-                if dst in front_line
+                e.planet for e in self.outbound_edges[p]
+                if e.planet in front_line
             ]
             if direct_front:
                 p.reinforcement_target = min(direct_front, key=lambda d: d.ships)
@@ -292,8 +352,8 @@ class Hellburner:
             # No direct edge to a frontline planet: pick the direct neighbor with
             # fewest hops to the front, breaking ties by fewest ships at destination.
             reachable = [
-                dst for dst, _ in self.outbound_edges[p]
-                if dst.owner == self.player and dst not in front_line and dst in hops_to_front
+                e.planet for e in self.outbound_edges[p]
+                if e.planet.owner == self.player and e.planet not in front_line and e.planet in hops_to_front
             ]
             if reachable:
                 p.reinforcement_target = min(reachable, key=lambda d: (hops_to_front[d], d.ships))
@@ -307,16 +367,16 @@ class Hellburner:
             if p.ships < (REINFORCEMENT_SIZE + GARRISON_SIZE):
                 continue
             has_enemy_incoming = any(
-                src.owner != self.player
-                for src, _ in self.inbound_edges.get(p, []) )
+                e.planet.owner != self.player
+                for e in self.inbound_edges.get(p, []) )
             if has_enemy_incoming:
                 continue
             target = p.reinforcement_target
             ships = int(p.ships - GARRISON_SIZE)
-            angle, ix, iy, travel = self.intercept_planet(p.x, p.y, target, ships)
-            if not math.isfinite(travel):
+            ic = self.intercept_planet(p.x, p.y, target, ships)
+            if not math.isfinite(ic.travel):
                 continue
-            orders.append([p.id, angle, ships])
+            orders.append(FleetOrder(p.id, ic.angle, ships))
         return orders
 
     # ------------------------------------------------------------------
@@ -330,11 +390,11 @@ class Hellburner:
                     state.garrison[pid] = state.garrison.get(pid, 0) + state.production.get(pid, 0)
 
             # 2. Collect arrivals at this turn
-            arrivals_by_dest: dict[int, list[tuple[int, float]]] = defaultdict(list)
+            arrivals_by_dest: dict[int, list[OwnerShips]] = defaultdict(list)
             remaining_friendly = []
             for f in state.friendly_fleets:
                 if f.arrival_turn == t:
-                    arrivals_by_dest[f.destination_id].append((f.owner, f.fleet_size))
+                    arrivals_by_dest[f.destination_id].append(OwnerShips(f.owner, f.fleet_size))
                 else:
                     remaining_friendly.append(f)
             state.friendly_fleets = remaining_friendly
@@ -342,7 +402,7 @@ class Hellburner:
             remaining_enemy = []
             for f in state.enemy_fleets:
                 if f.arrival_turn == t:
-                    arrivals_by_dest[f.destination_id].append((f.owner, f.fleet_size))
+                    arrivals_by_dest[f.destination_id].append(OwnerShips(f.owner, f.fleet_size))
                 else:
                     remaining_enemy.append(f)
             state.enemy_fleets = remaining_enemy
@@ -357,12 +417,12 @@ class Hellburner:
         self,
         state: WarchestState,
         planet_id: int,
-        arrivals: list[tuple[int, float]],
+        arrivals: list[OwnerShips],
     ) -> None:
         # Stage 1: arriving fleets fight each other (garrison is separate)
         owner_ships: dict[int, float] = defaultdict(float)
-        for owner, ships in arrivals:
-            owner_ships[owner] += ships
+        for a in arrivals:
+            owner_ships[a.owner] += a.ships
 
         if not owner_ships:
             return
@@ -415,34 +475,34 @@ class Hellburner:
                 continue  # ignore fleets targeting comets
             # Sort arrivals by travel time so the earliest-arriving friendly fleet is
             # processed first and gets the production_id claim.
-            for owner, ships, t, _, _, _, _ in sorted(arrivals, key=lambda a: a[2]):
-                arrival  = self.scene_step + math.ceil(t)
-                is_cap   = (owner != dest_planet.owner)
+            for arr in sorted(arrivals, key=lambda a: a.travel_time):
+                arrival  = self.scene_step + math.ceil(arr.travel_time)
+                is_cap   = (arr.owner != dest_planet.owner)
                 # Project target garrison to arrival time so garrison_on_arrival is accurate.
                 if is_cap:
-                    garrison_at_arrival = dest_planet.ships + dest_planet.production * math.ceil(t)
-                    gar_on_arr = max(0.0, ships - garrison_at_arrival)
+                    garrison_at_arrival = dest_planet.ships + dest_planet.production * math.ceil(arr.travel_time)
+                    gar_on_arr = max(0.0, arr.ships - garrison_at_arrival)
                 else:
-                    gar_on_arr = ships
+                    gar_on_arr = arr.ships
                 # Only the first friendly fleet to a capture target claims the production bonus.
                 # Without this guard, two friendly fleets to the same planet each get
                 # production_id set, and warchest_score counts that planet's income twice.
-                if is_cap and owner == self.player:
+                if is_cap and arr.owner == self.player:
                     if dest_planet.id in friendly_capture_claimed:
                         is_cap = False   # treat as reinforcement for scoring purposes
-                        gar_on_arr = ships
+                        gar_on_arr = arr.ships
                     else:
                         friendly_capture_claimed.add(dest_planet.id)
                 fleet = WarchestFleet(
-                    owner=owner,
+                    owner=arr.owner,
                     destination_id=dest_planet.id,
-                    fleet_size=ships,
+                    fleet_size=arr.ships,
                     garrison_on_arrival=gar_on_arr,
                     arrival_turn=arrival,
                     is_capture=is_cap,
                     production_id=dest_planet.id if is_cap else -1,
                 )
-                if owner == self.player:
+                if arr.owner == self.player:
                     friendly_fleets.append(fleet)
                 else:
                     enemy_fleets.append(fleet)
@@ -492,14 +552,14 @@ class Hellburner:
         state: WarchestState,
         target: HPlanet,
         horizon: int,
-    ) -> dict:
+    ) -> dict[int, Assignment]:
         candidates = sorted(
-            [(src, travel)
-             for src, travel in self.inbound_edges.get(target, [])
-             if state.ownership.get(src.id) == self.player
-             and src.id not in state.committed_ids
-             and state.garrison.get(src.id, 0) > 0],
-            key=lambda x: x[1],   # closest first
+            [edge
+             for edge in self.inbound_edges.get(target, [])
+             if state.ownership.get(edge.planet.id) == self.player
+             and edge.planet.id not in state.committed_ids
+             and state.garrison.get(edge.planet.id, 0) > 0],
+            key=lambda e: e.travel,   # closest first
         )
 
         if not candidates:
@@ -537,32 +597,31 @@ class Hellburner:
             #
             # NOTE: inbound_edges stores raw distance, not travel turns. Compute the first
             # candidate's actual intercept time to get a correct turn estimate.
-            first_src = candidates[0][0]
+            first_src = candidates[0].planet
             first_ships = int(state.garrison.get(first_src.id, 1)) or 1
-            _, _, _, min_travel_turns = self.intercept_planet(
-                first_src.x, first_src.y, target, first_ships
-            )
-            min_travel = min_travel_turns if math.isfinite(min_travel_turns) else candidates[0][1]
+            ic0 = self.intercept_planet(first_src.x, first_src.y, target, first_ships)
+            min_travel = ic0.travel if math.isfinite(ic0.travel) else candidates[0].travel
             arrival_garrison = (state.garrison.get(target.id, 0.0) +
                                 state.production.get(target.id, 0.0) * math.ceil(min_travel))
 
-        selected = []   # (src, ships_now, angle, arrival_turn_if_launched_now)
+        selected: list[tuple[HPlanet, float, float, int]] = []   # (src, ships_now, angle, arrival_turn_if_launched_now)
         total_ships  = 0.0
         latest_arrival = 0
 
-        for src, _ in candidates:
+        for edge in candidates:
+            src = edge.planet
             ships = int(state.garrison.get(src.id, 0))
             if ships <= 0:
                 continue
-            angle, ix, iy, t = self.intercept_planet(src.x, src.y, target, ships)
-            if not math.isfinite(t):
+            ic = self.intercept_planet(src.x, src.y, target, ships)
+            if not math.isfinite(ic.travel):
                 continue
-            if self.first_planet_hit(src.x, src.y, angle, ships, src) is not target:
+            if self.first_planet_hit(src.x, src.y, ic.angle, ships, src) is not target:
                 continue
-            arrival = state.turn + math.ceil(t)
+            arrival = state.turn + math.ceil(ic.travel)
             if arrival > horizon:
                 continue
-            selected.append((src, ships, angle, arrival))
+            selected.append((src, ships, ic.angle, arrival))
             total_ships    += ships
             latest_arrival  = max(latest_arrival, arrival)
             if total_ships > arrival_garrison:
@@ -593,7 +652,7 @@ class Hellburner:
         # Phase 2: synchronize — each source launches so it arrives at latest_arrival.
         # Sources with shorter travel times get a delay; during the delay they accumulate
         # production but may also take enemy fleet damage — simulate both.
-        assignment: dict[int, tuple[float, int, int]] = {}
+        assignment: dict[int, Assignment] = {}
 
         for src, ships_now, _, arrival_now in selected:
             delay       = latest_arrival - arrival_now   # turns this source must wait
@@ -619,35 +678,34 @@ class Hellburner:
             orb = self.orbital_info.get(src)
             if orb is not None:
                 cx = cy = CENTER
-                r, ia = orb
-                a  = ia + self.angular_velocity * (launch_turn - 0.5)
-                sx, sy = cx + r * math.cos(a), cy + r * math.sin(a)
+                a  = orb.initial_angle + self.angular_velocity * (launch_turn - 0.5)
+                sx, sy = cx + orb.r * math.cos(a), cy + orb.r * math.sin(a)
             else:
                 sx, sy = src.x, src.y
 
-            angle2, ix2, iy2, t2 = self.intercept_planet(sx, sy, target, projected)
-            if not math.isfinite(t2):
+            ic2 = self.intercept_planet(sx, sy, target, projected)
+            if not math.isfinite(ic2.travel):
                 continue
             # Re-validate path from the delayed launch position (source may have rotated).
-            if self.first_planet_hit(sx, sy, angle2, projected, src) is not target:
+            if self.first_planet_hit(sx, sy, ic2.angle, projected, src) is not target:
                 continue
-            arrival2 = launch_turn + math.ceil(t2)
+            arrival2 = launch_turn + math.ceil(ic2.travel)
             # Enforce exact synchronization: all sources must share the same arrival turn.
             # A 1-turn drift would mean the first source fights the garrison alone before
             # the second arrives, violating the synchronized-arrival invariant (§6.1).
             if arrival2 != latest_arrival:
                 continue
-            assignment[src.id] = (projected, launch_turn, arrival2)
+            assignment[src.id] = Assignment(projected, launch_turn, arrival2)
 
         if not assignment:
             return {}
 
         # Phase 3: safety check — ensure source survives until its launch_turn.
-        for src_id, (ships, launch_turn, _) in list(assignment.items()):
-            if self.warchest_source_would_be_lost(state, src_id, ships, launch_turn):
+        for src_id, a in list(assignment.items()):
+            if self.warchest_source_would_be_lost(state, src_id, a.ships, a.launch_turn):
                 del assignment[src_id]
 
-        total_sync = sum(ships for ships, _, _ in assignment.values())
+        total_sync = sum(a.ships for a in assignment.values())
         if total_sync <= arrival_garrison:
             return {}  # safety filter removed too many sources
 
@@ -658,9 +716,9 @@ class Hellburner:
         excess = total_sync - arrival_garrison - 1
         if excess > 1:
             first_id = list(assignment.keys())[0]
-            ships, lt, at = assignment[first_id]
-            trimmed = max(1, int(ships - excess // 2))
-            assignment[first_id] = (trimmed, lt, at)
+            a = assignment[first_id]
+            trimmed = max(1, int(a.ships - excess // 2))
+            assignment[first_id] = Assignment(trimmed, a.launch_turn, a.arrival_turn)
 
         return assignment
 
@@ -668,24 +726,24 @@ class Hellburner:
         self,
         state: WarchestState,
         target: HPlanet,
-        assignment: dict,  # {source_id: (ships, launch_turn, arrival_turn)}
+        assignment: dict[int, Assignment],
     ) -> WarchestState:
         total_ships    = 0.0
         latest_arrival = 0
 
-        for source_id, (ships, launch_turn, arrival_turn) in sorted(
-            assignment.items(), key=lambda x: x[1][1]   # sort ascending by launch_turn
+        for source_id, a in sorted(
+            assignment.items(), key=lambda x: x[1].launch_turn
         ):
             # Advance to one turn before launch so production for launch_turn hasn't run yet.
-            if launch_turn - 1 > state.turn:
-                self.warchest_advance(state, launch_turn - 1)
+            if a.launch_turn - 1 > state.turn:
+                self.warchest_advance(state, a.launch_turn - 1)
             # Deduct ships before this turn's production runs.
-            state.garrison[source_id] = max(0.0, state.garrison.get(source_id, 0.0) - ships)
+            state.garrison[source_id] = max(0.0, state.garrison.get(source_id, 0.0) - a.ships)
             state.committed_ids.add(source_id)
             # Now advance through launch_turn: applies production, resolves any arrivals.
-            self.warchest_advance(state, launch_turn)
-            total_ships    += ships
-            latest_arrival  = max(latest_arrival, arrival_turn)
+            self.warchest_advance(state, a.launch_turn)
+            total_ships    += a.ships
+            latest_arrival  = max(latest_arrival, a.arrival_turn)
 
         # All ships arrive simultaneously at latest_arrival.
         # Project target garrison forward to arrival time — enemy planets produce while we travel.
@@ -814,18 +872,19 @@ class Hellburner:
         """
         garrison_size = state.garrison.get(target.id, target.ships)
         best = math.inf
-        viable = []  # (arrival_turn, ships) for all sources with a valid path
+        viable: list[tuple[int, float]] = []  # (arrival_turn, ships)
 
-        for src, _ in self.inbound_edges.get(target, []):
+        for edge in self.inbound_edges.get(target, []):
+            src = edge.planet
             if state.ownership.get(src.id) != self.player:
                 continue
             ships = state.garrison.get(src.id, 0)
             if ships <= 0:
                 continue
-            _, _, _, t = self.intercept_planet(src.x, src.y, target, int(ships))
-            if not math.isfinite(t):
+            ic = self.intercept_planet(src.x, src.y, target, int(ships))
+            if not math.isfinite(ic.travel):
                 continue
-            arrival = state.turn + math.ceil(t)
+            arrival = state.turn + math.ceil(ic.travel)
             if arrival > horizon:
                 continue
             viable.append((arrival, ships))
@@ -882,21 +941,21 @@ class Hellburner:
         return (defense + [p for p, _ in offense])[:MAX_CANDIDATES]
 
     def warchest_emit_moves(self, sequence) -> FleetOrders:
-        moves = []
+        moves: FleetOrders = []
         planet_by_id = {p.id: p for p in self.planets}
         for target_planet, assignment in sequence:
-            for source_id, (ships, launch_turn, arrival_turn) in assignment.items():
-                if launch_turn != self.scene_step:
+            for source_id, a in assignment.items():
+                if a.launch_turn != self.scene_step:
                     continue  # deferred; will be re-planned next turn
                 src = planet_by_id.get(source_id)
                 if src is None:
                     continue
-                angle, ix, iy, travel = self.intercept_planet(src.x, src.y, target_planet, ships)
-                if not math.isfinite(travel):
+                ic = self.intercept_planet(src.x, src.y, target_planet, a.ships)
+                if not math.isfinite(ic.travel):
                     continue
-                if self.first_planet_hit(src.x, src.y, angle, ships, src) is not target_planet:
+                if self.first_planet_hit(src.x, src.y, ic.angle, a.ships, src) is not target_planet:
                     continue
-                moves.append([source_id, angle, ships])
+                moves.append(FleetOrder(source_id, ic.angle, a.ships))
         return moves
 
     def warchest_dfs(self, state, remaining, sequence, horizon, t0, best):
@@ -941,32 +1000,32 @@ class Hellburner:
         self._warchest_committed_ids = {
             src_id
             for _, assignment in best[1]
-            for src_id, (_, launch_turn, _) in assignment.items()
-            if launch_turn == self.scene_step
+            for src_id, a in assignment.items()
+            if a.launch_turn == self.scene_step
         }
         return self.warchest_emit_moves(best[1])
 
     def drain_comets(self) -> FleetOrders:
-        orders = []
+        orders: FleetOrders = []
         for comet in self.owned_comets:
             if comet.ships <= 0:
                 continue
             # Find nearest non-comet planet within reach
             best_dst, best_travel = None, math.inf
             for p in self.planets:
-                _, _, _, t = self.intercept_planet(comet.x, comet.y, p, int(comet.ships))
-                if math.isfinite(t) and t < best_travel:
-                    best_travel = t
+                ic = self.intercept_planet(comet.x, comet.y, p, int(comet.ships))
+                if math.isfinite(ic.travel) and ic.travel < best_travel:
+                    best_travel = ic.travel
                     best_dst = p
             if best_dst is None:
                 continue
             ships = int(comet.ships)
-            angle, ix, iy, travel = self.intercept_planet(comet.x, comet.y, best_dst, ships)
-            if not math.isfinite(travel):
+            ic = self.intercept_planet(comet.x, comet.y, best_dst, ships)
+            if not math.isfinite(ic.travel):
                 continue
-            if self.first_planet_hit(comet.x, comet.y, angle, ships, comet) is not best_dst:
+            if self.first_planet_hit(comet.x, comet.y, ic.angle, ships, comet) is not best_dst:
                 continue
-            orders.append([comet.id, angle, ships])
+            orders.append(FleetOrder(comet.id, ic.angle, ships))
         return orders
 
     # ------------------------------------------------------------------
@@ -976,15 +1035,16 @@ class Hellburner:
     def viz_arrow_endpoints(
         px: float, py: float, tx: float, ty: float,
         origin_radius: float, target_radius: float,
-    ) -> tuple[float, float, float, float]:
+    ) -> ArrowEndpoints:
         dx, dy = tx - px, ty - py
         d = math.hypot(dx, dy)
         if d < 1e-6:
-            return px, py, tx, ty
+            return ArrowEndpoints(px, py, tx, ty)
         ux, uy = dx / d, dy / d
-        sx, sy = px + ux * origin_radius, py + uy * origin_radius
-        ex, ey = tx - ux * target_radius, ty - uy * target_radius
-        return sx, sy, ex, ey
+        return ArrowEndpoints(
+            px + ux * origin_radius, py + uy * origin_radius,
+            tx - ux * target_radius, ty - uy * target_radius,
+        )
 
     def viz_proximity_graph(self, show_inbound: bool = True) -> None:
         """Draw directed edges from each planet's current position to the target's future_pos."""
@@ -1000,12 +1060,12 @@ class Hellburner:
                 continue
             px, py = p.x, p.y
             neighbor_strs: list[str] = []
-            for neighbor, t in neighbors:
-                tx, ty = self.future_pos[neighbor]
-                sx, sy, ex, ey = self.viz_arrow_endpoints(px, py, tx, ty, p.radius, neighbor.radius)
+            for edge in neighbors:
+                fp = self.future_pos[edge.planet]
+                ae = self.viz_arrow_endpoints(px, py, fp.x, fp.y, p.radius, edge.planet.radius)
                 color = '#ff8844' if p.owner == 1 else '#22aaff'
-                viz.add_arrow(self.scene_step, sx, sy, ex, ey, color=color, width=1, length_frac=1.0, head_size=5)
-                neighbor_strs.append(f'P{neighbor.id}({t:.0f})')
+                viz.add_arrow(self.scene_step, ae.sx, ae.sy, ae.ex, ae.ey, color=color, width=1, length_frac=1.0, head_size=5)
+                neighbor_strs.append(f'P{edge.planet.id}({edge.travel:.0f})')
             on_screen.append(f'  P{p.id}: [{", ".join(neighbor_strs)}]')
 
         edge_count = sum(len(v) for v in edge_map.values())
@@ -1020,8 +1080,8 @@ class Hellburner:
                 continue
             px, py = p.x, p.y
             tx, ty = p.reinforcement_target.x, p.reinforcement_target.y
-            sx, sy, ex, ey = self.viz_arrow_endpoints(px, py, tx, ty, p.radius, p.reinforcement_target.radius)
-            viz.add_arrow(self.scene_step, sx, sy, ex, ey, color='#44ff88', width=1, length_frac=1.0, head_size=5)
+            ae = self.viz_arrow_endpoints(px, py, tx, ty, p.radius, p.reinforcement_target.radius)
+            viz.add_arrow(self.scene_step, ae.sx, ae.sy, ae.ex, ae.ey, color='#44ff88', width=1, length_frac=1.0, head_size=5)
             lines.append(f'  P{p.id} -> P{p.reinforcement_target.id}')
 
         if lines:
@@ -1033,10 +1093,10 @@ class Hellburner:
         """Draw a line from each fleet to its destination planet's arrival position."""
         lines = []
         for planet, arrivals in self.destination_list.items():
-            for owner, ships, t, sx, sy, px, py in arrivals:
-                color = '#44ff88' if owner == 0 else '#ff8844'
-                viz.add_line(self.scene_step, sx, sy, px, py, color=color, width=1)
-                lines.append(f' {owner} ({ships}) -> P{planet.id}({planet.ships}) t={round(t)} v={fleet_speed(ships):.2f}')
+            for arr in arrivals:
+                color = '#44ff88' if arr.owner == 0 else '#ff8844'
+                viz.add_line(self.scene_step, arr.src_x, arr.src_y, arr.arrival_x, arr.arrival_y, color=color, width=1)
+                lines.append(f' {arr.owner} ({arr.ships}) -> P{planet.id}({planet.ships}) t={round(arr.travel_time)} v={fleet_speed(arr.ships):.2f}')
         if lines:
             viz.add_text(self.scene_step, 'dest_list:\n' + '\n'.join(lines))
 
@@ -1074,7 +1134,7 @@ class Hellburner:
 
         reinforcement_orders = self.send_reinforcements()
         reinforcement_orders = [o for o in reinforcement_orders
-                                if o[0] not in self._warchest_committed_ids]
+                                if o.planet_id not in self._warchest_committed_ids]
         moves.extend(reinforcement_orders)
 
         comet_orders = self.drain_comets()
@@ -1095,7 +1155,7 @@ class Hellburner:
 def agent(obs: dict[str, Any]) -> list[Any]:
     _agent = Hellburner()
     try:
-        return _agent.main(obs)
+        return [[o.planet_id, o.angle, o.ships] for o in _agent.main(obs)]
     except Exception:
         import traceback
         tb = traceback.format_exc()

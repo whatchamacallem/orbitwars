@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, '/home/t/orbitwars')
 
 from hellburner import (
-    Hellburner, WarchestFleet, WarchestState,
+    Hellburner, WarchestFleet, WarchestState, Assignment,
     warchest_copy, fleet_speed, UNIFIED_LOOK_AHEAD, LOOK_AHEAD,
     MAX_DISTANCE, GARRISON_SIZE, REINFORCEMENT_SIZE,
 )
@@ -103,36 +103,28 @@ class TestInterceptPlanet(unittest.TestCase):
 
     def test_static_intercept_angle(self):
         """Shooting from p0 straight up at a static p1 directly above returns angle π/2."""
-        angle, ix, iy, t = self.h.intercept_planet(
-            self.p0.x, self.p0.y, self.p1, 100
-        )
-        self.assertAlmostEqual(angle, math.pi / 2, places=4)
+        ic = self.h.intercept_planet(self.p0.x, self.p0.y, self.p1, 100)
+        self.assertAlmostEqual(ic.angle, math.pi / 2, places=4)
 
     def test_static_intercept_position_matches_target(self):
         """The predicted intercept position equals the static target's position."""
-        angle, ix, iy, t = self.h.intercept_planet(
-            self.p0.x, self.p0.y, self.p1, 100
-        )
-        self.assertAlmostEqual(ix, 15.0, places=2)
-        self.assertAlmostEqual(iy, 60.0, places=2)
+        ic = self.h.intercept_planet(self.p0.x, self.p0.y, self.p1, 100)
+        self.assertAlmostEqual(ic.x, 15.0, places=2)
+        self.assertAlmostEqual(ic.y, 60.0, places=2)
 
     def test_static_intercept_travel_positive(self):
         """Travel time to a reachable static planet is finite and positive."""
-        _, _, _, t = self.h.intercept_planet(
+        ic = self.h.intercept_planet(
             self.p0.x, self.p0.y, self.p1, 100
         )
-        self.assertGreater(t, 0)
-        self.assertTrue(math.isfinite(t))
+        self.assertGreater(ic.travel, 0)
+        self.assertTrue(math.isfinite(ic.travel))
 
     def test_travel_decreases_with_more_ships(self):
         """A larger fleet reaches the same target in fewer turns because it travels faster."""
-        _, _, _, t_small = self.h.intercept_planet(
-            self.p0.x, self.p0.y, self.p1, 1
-        )
-        _, _, _, t_large = self.h.intercept_planet(
-            self.p0.x, self.p0.y, self.p1, 1000
-        )
-        self.assertGreater(t_small, t_large)
+        ic_small = self.h.intercept_planet(self.p0.x, self.p0.y, self.p1, 1)
+        ic_large = self.h.intercept_planet(self.p0.x, self.p0.y, self.p1, 1000)
+        self.assertGreater(ic_small.travel, ic_large.travel)
 
 
 # ---------------------------------------------------------------------------
@@ -150,10 +142,8 @@ class TestFirstPlanetHit(unittest.TestCase):
 
     def test_clear_shot_hits_target(self):
         """A fleet aimed directly at p1 with no obstacles returns p1 as the first hit."""
-        angle, _, _, _ = self.h.intercept_planet(
-            self.p0.x, self.p0.y, self.p1, 100
-        )
-        hit = self.h.first_planet_hit(self.p0.x, self.p0.y, angle, 100, self.p0)
+        ic = self.h.intercept_planet(self.p0.x, self.p0.y, self.p1, 100)
+        hit = self.h.first_planet_hit(self.p0.x, self.p0.y, ic.angle, 100, self.p0)
         self.assertIs(hit, self.p1)
 
     def test_sun_blocking_returns_none(self):
@@ -170,11 +160,9 @@ class TestFirstPlanetHit(unittest.TestCase):
             comet_ids=[2],
         )
         h, _ = run(obs)
-        angle, _, _, _ = h.intercept_planet(
-            h.planets[0].x, h.planets[0].y, h.planets[1], 100
-        )
+        ic = h.intercept_planet(h.planets[0].x, h.planets[0].y, h.planets[1], 100)
         hit = h.first_planet_hit(
-            h.planets[0].x, h.planets[0].y, angle, 100, h.planets[0]
+            h.planets[0].x, h.planets[0].y, ic.angle, 100, h.planets[0]
         )
         self.assertIsNotNone(hit)
         self.assertIsNot(hit, h.planets[1])
@@ -203,8 +191,7 @@ class TestBuildOrbitalInfo(unittest.TestCase):
         h, _ = run(obs)
         orb = h.orbital_info[h.planets[1]]
         self.assertIsNotNone(orb)
-        r, ia = orb
-        self.assertAlmostEqual(r, 15.0, places=4)
+        self.assertAlmostEqual(orb.r, 15.0, places=4)
 
     def test_comet_registered_as_static(self):
         """Comets follow elliptical paths so they are always registered as static (None)
@@ -230,8 +217,8 @@ class TestBuildProximityGraph(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         p0, p1 = h.planets[0], h.planets[1]
-        self.assertTrue(any(src is p0 for src, _ in h.inbound_edges[p1]))
-        self.assertTrue(any(src is p1 for src, _ in h.inbound_edges[p0]))
+        self.assertTrue(any(e.planet is p0 for e in h.inbound_edges[p1]))
+        self.assertTrue(any(e.planet is p1 for e in h.inbound_edges[p0]))
 
     def test_planets_out_of_range_have_no_edges(self):
         """Two planets 88 units apart (> MAX_DISTANCE=35) have empty inbound_edges."""
@@ -248,7 +235,7 @@ class TestBuildProximityGraph(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, _ = run(obs)
         p0, p1 = h.planets[0], h.planets[1]
-        self.assertTrue(any(dst is p1 for dst, _ in h.outbound_edges[p0]))
+        self.assertTrue(any(e.planet is p1 for e in h.outbound_edges[p0]))
 
     def test_comets_excluded_from_planet_graph(self):
         """Comets are not nodes in inbound_edges; they only act as path obstacles."""
@@ -502,10 +489,10 @@ class TestWarchestAssignFleet(unittest.TestCase):
         )
         assignment = h.warchest_assign_fleet(initial, h.planets[1], horizon)
         self.assertIn(0, assignment)
-        ships, launch_turn, arrival_turn = assignment[0]
-        self.assertGreater(ships, 0)
-        self.assertEqual(launch_turn, 0)
-        self.assertGreater(arrival_turn, 0)
+        a = assignment[0]
+        self.assertGreater(a.ships, 0)
+        self.assertEqual(a.launch_turn, 0)
+        self.assertGreater(a.arrival_turn, 0)
 
     def test_no_source_returns_empty(self):
         """No owned planet is within MAX_DISTANCE of the enemy, so the assignment is empty."""
@@ -572,7 +559,7 @@ class TestWarchestAssignFleet(unittest.TestCase):
         )
         assignment = h.warchest_assign_fleet(initial, h.planets[2], horizon)
         self.assertNotEqual(assignment, {})
-        total = sum(s for s, _, _ in assignment.values())
+        total = sum(a.ships for a in assignment.values())
         self.assertGreater(total, 0)
 
     def test_all_sources_share_same_arrival_turn(self):
@@ -584,7 +571,7 @@ class TestWarchestAssignFleet(unittest.TestCase):
              [2, 1, 30.0, 50.0, 2.0, 40, 3]]
         )
         assignment = h.warchest_assign_fleet(initial, h.planets[2], horizon)
-        arrival_turns = {at for _, _, at in assignment.values()}
+        arrival_turns = {a.arrival_turn for a in assignment.values()}
         self.assertEqual(len(arrival_turns), 1)
 
 
@@ -756,7 +743,7 @@ class TestWarchestExecute(unittest.TestCase):
         state = warchest_copy(initial)
         after = h.warchest_execute(state, p1, assignment)
         self.assertEqual(after.ownership[p1.id], h.player)
-        arrival = list(assignment.values())[0][2]
+        arrival = list(assignment.values())[0].arrival_turn
         self.assertEqual(after.turn, arrival)
 
     def test_execute_deducts_ships_from_source(self):
@@ -795,7 +782,7 @@ class TestWarchestExecute(unittest.TestCase):
         h, _ = run(obs)
         initial = h.warchest_initial_state()
         p1 = h.planets[1]
-        assignment = {0: (1, 0, 8)}   # 1 ship cannot beat garrison 20+
+        assignment = {0: Assignment(1, 0, 8)}   # 1 ship cannot beat garrison 20+
         state = warchest_copy(initial)
         after = h.warchest_execute(state, p1, assignment)
         self.assertEqual(after.turn, 8)
@@ -814,10 +801,9 @@ class TestRunUnifiedSearch(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, moves = run(obs)
         self.assertEqual(len(moves), 1)
-        planet_id, angle, ships = moves[0]
-        self.assertEqual(planet_id, 0)
-        self.assertGreater(ships, 0)
-        self.assertAlmostEqual(angle, math.pi / 2, places=4)
+        self.assertEqual(moves[0].planet_id, 0)
+        self.assertGreater(moves[0].ships, 0)
+        self.assertAlmostEqual(moves[0].angle, math.pi / 2, places=4)
 
     def test_no_enemy_returns_empty(self):
         """When all planets are owned by the player (no enemy_planets), main() short-circuits
@@ -843,7 +829,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
                        angular_velocity=0.03)
         _, moves = run(obs)
         self.assertEqual(len(moves), 1)
-        self.assertEqual(moves[0][0], 0)
+        self.assertEqual(moves[0].planet_id, 0)
 
     def test_sun_blocked_path_no_move(self):
         """p0 at (30,50) and p1 at (70,50) are on either side of the sun; the direct path
@@ -851,7 +837,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
         obs = make_obs([[0, 0, 30.0, 50.0, 2.0, 100, 3],
                         [1, 1, 70.0, 50.0, 2.0, 20, 2]])
         _, moves = run(obs)
-        warchest_moves = [m for m in moves if m[0] == 0]
+        warchest_moves = [m for m in moves if m.planet_id == 0]
         self.assertEqual(warchest_moves, [])
 
     def test_committed_ids_set_after_search(self):
@@ -861,7 +847,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
                         [1, 1, 15.0, 60.0, 2.0, 20, 2]])
         h, moves = run(obs)
         if moves:
-            src_ids = {m[0] for m in moves}
+            src_ids = {m.planet_id for m in moves}
             self.assertTrue(src_ids.issubset(h._warchest_committed_ids))
 
     def test_score_improves_after_dfs(self):
@@ -895,8 +881,8 @@ class TestWarchestEmitMoves(unittest.TestCase):
         p1 = h.planets[1]
         assignment = h.warchest_assign_fleet(initial, p1, horizon)
         src_id = list(assignment.keys())[0]
-        ships, lt, at = assignment[src_id]
-        assignment[src_id] = (ships, h.scene_step + 3, at)  # push launch into future
+        a = assignment[src_id]
+        assignment[src_id] = Assignment(a.ships, h.scene_step + 3, a.arrival_turn)  # push launch into future
         moves = h.warchest_emit_moves([(p1, assignment)])
         self.assertEqual(moves, [])
 
@@ -912,7 +898,7 @@ class TestWarchestEmitMoves(unittest.TestCase):
         assignment = h.warchest_assign_fleet(initial, p1, horizon)
         moves = h.warchest_emit_moves([(p1, assignment)])
         self.assertEqual(len(moves), 1)
-        self.assertEqual(moves[0][0], 0)
+        self.assertEqual(moves[0].planet_id, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -927,7 +913,7 @@ class TestSendReinforcements(unittest.TestCase):
                         [1, 0, 30.0, 30.0, 2.0, 15, 2],
                         [2, 1, 60.0, 30.0, 2.0, 30, 2]])
         h, moves = run(obs)
-        src_ids = {m[0] for m in moves}
+        src_ids = {m.planet_id for m in moves}
         self.assertIn(0, src_ids)
 
     def test_reinforcement_target_set_correctly(self):
@@ -948,7 +934,7 @@ class TestSendReinforcements(unittest.TestCase):
         h, moves = run(obs)
         src_counts = {}
         for m in moves:
-            src_counts[m[0]] = src_counts.get(m[0], 0) + 1
+            src_counts[m.planet_id] = src_counts.get(m.planet_id, 0) + 1
         for src_id, count in src_counts.items():
             self.assertEqual(count, 1, f'planet {src_id} moved {count} times')
 
@@ -968,9 +954,9 @@ class TestDrainComets(unittest.TestCase):
             comet_ids=[2],
         )
         _, moves = run(obs)
-        comet_moves = [m for m in moves if m[0] == 2]
+        comet_moves = [m for m in moves if m.planet_id == 2]
         self.assertEqual(len(comet_moves), 1)
-        self.assertEqual(comet_moves[0][2], 30)
+        self.assertEqual(comet_moves[0].ships, 30)
 
     def test_unowned_comet_not_drained(self):
         """An enemy-owned comet is not in owned_comets so drain_comets emits no move for it."""
@@ -981,7 +967,7 @@ class TestDrainComets(unittest.TestCase):
             comet_ids=[2],
         )
         _, moves = run(obs)
-        comet_moves = [m for m in moves if m[0] == 2]
+        comet_moves = [m for m in moves if m.planet_id == 2]
         self.assertEqual(comet_moves, [])
 
     def test_comet_not_a_warchest_target(self):
@@ -1020,9 +1006,9 @@ class TestBuildDestinationList(unittest.TestCase):
         self.assertIn(dest_planet, h.destination_list)
         arrivals = h.destination_list[dest_planet]
         self.assertEqual(len(arrivals), 1)
-        owner, ships, t, sx, sy, px, py = arrivals[0]
-        self.assertEqual(owner, 1)
-        self.assertAlmostEqual(ships, 40)
+        arr = arrivals[0]
+        self.assertEqual(arr.owner, 1)
+        self.assertAlmostEqual(arr.ships, 40)
 
     def test_enemy_fleet_in_initial_state(self):
         """The in-flight enemy fleet from build_destination_list is loaded into
