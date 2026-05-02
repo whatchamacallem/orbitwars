@@ -1,11 +1,8 @@
 #!/bin/sh
 # SPDX-FileCopyrightText: © 2026 Adrian Johnston.
 # SPDX-License-Identifier: MIT
-#
-# This script only archives the .git folder as it contains everything needed to
-# restore the full file tree of the current commit (and all previous).
 
-PROJECT="orbitwars"
+PROJECT="$(basename $PWD)"
 DATE="$(date +%Y-%m-%d)"
 ARCHIVE="$PROJECT-$DATE.git.txz"
 
@@ -35,4 +32,4 @@ fi
 
 tar -cJf "$DESTINATION/$ARCHIVE" -C ".." "$PROJECT/archive.sh" "$PROJECT/.git"
 
-echo "wrote: $DESTINATION/$ARCHIVE"
+ls -hs1 "$DESTINATION/$ARCHIVE"

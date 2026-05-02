@@ -19,6 +19,7 @@ def viz_save(seed=None):
 
 
 SHIP_SPEED_MAX      = 6.0    # matches configuration.shipSpeed default
+COMET_RADIUS        = 10.0   # inflated comet radius for path-blocking checks
 
 MAX_DISTANCE        = 35
 ROTATION_LOOK_AHEAD = 10
@@ -29,7 +30,7 @@ GARRISON_SIZE       = 10
 TIME_BUDGET_S       = 0.800  # hard wall; return best-found-so-far if exceeded
 DFS_EARLY_EXIT_S    = 0.100  # soft cutoff inside DFS loop (leaves room for emit/reinforce)
 WARCHEST_LOOK_AHEAD = 50     # horizon = min(scene_step + WARCHEST_LOOK_AHEAD, 500)
-MAX_CANDIDATES      = 6      # hard cap on DFS branching factor (reduce to 4 if timing spikes)
+MAX_CANDIDATES      = 20     # hard cap on DFS branching factor (reduce to 4 if timing spikes)
 ENEMY_WEIGHT        = 0.8    # penalty multiplier for enemy production (tune toward 1.0)
 
 
@@ -161,6 +162,8 @@ class Hellburner:
         self.future_pos: FuturePos = {}
         self.destination_list: DestinationList = {}
         self._warchest_committed_ids: set[int] = set()
+        # True when exactly one enemy player remains
+        self.solo_endgame: bool = False
 
     def build_orbital_info(self, initial_planets: list[Any]) -> None:
         """Return dict mapping Planet -> OrbitalEntry if orbiting, else None."""
@@ -256,15 +259,16 @@ class Hellburner:
         Returns None if the path crosses the sun before any planet is hit."""
         best = None
         best_t = float('inf')
-        for planet in self.all_bodies:   # ← was self.planets; CRITICAL: comets must block paths
+        for planet in self.all_bodies:
             if planet is source:
                 continue
+            check_radius = COMET_RADIUS if planet.id in self.comet_ids else planet.radius
             ic = self.intercept_planet(sx, sy, planet, ships)
             dist = distance((sx, sy), (ic.x, ic.y))
-            if dist < planet.radius:
+            if dist < check_radius:
                 half_cone = math.pi
             else:
-                half_cone = math.asin(min(1.0, planet.radius / dist))
+                half_cone = math.asin(min(1.0, check_radius / dist))
             delta = abs(math.atan2(math.sin(angle - ic.angle), math.cos(angle - ic.angle)))
             if math.isfinite(ic.travel) and delta <= half_cone and ic.travel < best_t:
                 best_t = ic.travel
@@ -286,13 +290,14 @@ class Hellburner:
         for fleet in self.fleets:
             best = None
             best_t = float('inf')
-            for planet in self.all_bodies:   # ← was self.planets; CRITICAL: comets must block paths
+            for planet in self.all_bodies:
+                check_radius = COMET_RADIUS if planet.id in self.comet_ids else planet.radius
                 ic = self.intercept_planet(fleet.x, fleet.y, planet, fleet.ships)
                 dist = distance((fleet.x, fleet.y), (ic.x, ic.y))
-                if dist < planet.radius:
+                if dist < check_radius:
                     half_cone = math.pi
                 else:
-                    half_cone = math.asin(min(1.0, planet.radius / dist))
+                    half_cone = math.asin(min(1.0, check_radius / dist))
                 delta = abs(math.atan2(math.sin(fleet.angle - ic.angle),
                                        math.cos(fleet.angle - ic.angle)))
                 if math.isfinite(ic.travel) and delta <= half_cone and ic.travel < best_t:
@@ -300,6 +305,8 @@ class Hellburner:
                     best = (planet, ic.travel, ic.x, ic.y)
             if best is not None:
                 planet, travel, px, py = best
+                if planet.id in self.comet_ids:
+                    continue  # comet positions are unpredictable; don't track as destinations
                 self.destination_list[planet].append(
                     Arrival(fleet.owner, fleet.ships, travel, fleet.x, fleet.y, px, py)
                 )
@@ -716,15 +723,16 @@ class Hellburner:
         if total_sync <= arrival_garrison:
             return {}  # safety filter removed too many sources
 
-        # Phase 4: trim excess — halve the overshoot on the first-added (highest-delay) source.
+        # Phase 4: trim excess — keep half the surplus on the first-added (highest-delay) source
+        # so it retains some garrison while still sending enough to win.
         # selected is ordered closest-first (ascending arrival_now = descending delay), so the
-        # first key inserted into assignment has the largest delay and the most accumulated ships
-        # to spare.
+        # first key inserted into assignment has the largest delay and the most accumulated ships.
+        # Use ceiling division so odd excess values are fully resolved (excess=1 -> trim 1).
         excess = total_sync - arrival_garrison - 1
-        if excess > 1:
+        if excess > 0:
             first_id = list(assignment.keys())[0]
             a = assignment[first_id]
-            trimmed = max(1, int(a.ships - excess // 2))
+            trimmed = max(1, int(a.ships - (excess + 1) // 2))
             assignment[first_id] = Assignment(trimmed, a.launch_turn, a.arrival_turn)
 
         return assignment
@@ -857,7 +865,8 @@ class Hellburner:
             # which computes the true turn-based arrival time (inbound_edges holds distance, not turns).
             earliest_turn = self.warchest_earliest_capture(state, p, horizon)
             production_turns = max(0, horizon - earliest_turn) if math.isfinite(earliest_turn) else 0
-            net_gain = p.production * production_turns - capture_cost
+            prod_multiplier = (1.0 + ENEMY_WEIGHT) if self.solo_endgame else 1.0
+            net_gain = p.production * production_turns * prod_multiplier - capture_cost
             if net_gain > 0:
                 bound      += net_gain
                 ship_budget -= capture_cost
@@ -931,16 +940,24 @@ class Hellburner:
             if trial.ownership.get(p.id) != self.player:
                 defense.append(p)
 
+        # Planet IDs already committed to capture by an in-flight friendly fleet.
+        # These are handled; re-targeting them wastes DFS slots and can emit redundant moves.
+        already_captured_ids = {f.destination_id for f in initial.friendly_fleets if f.is_capture}
+
         offense = []
         for p in self.planets:
             if p.owner == self.player or p.id in self.comet_ids:
+                continue
+            if p.id in already_captured_ids:
                 continue
             if not self.inbound_edges.get(p):
                 continue
             ct = self.warchest_earliest_capture(initial, p, horizon)
             if not math.isfinite(ct):
                 continue
-            gain = p.production * (horizon - ct) - p.ships
+            prod_multiplier = (1.0 + ENEMY_WEIGHT) if self.solo_endgame else 1.0
+            ship_cost = 0.0 if self.solo_endgame else p.ships
+            gain = p.production * (horizon - ct) * prod_multiplier - ship_cost
             if gain > 0:
                 offense.append((p, gain))
 
@@ -951,9 +968,28 @@ class Hellburner:
         moves: FleetOrders = []
         planet_by_id = {p.id: p for p in self.planets}
         for target_planet, assignment in sequence:
+            # Collect sources that launch this turn vs deferred sources.
+            immediate: list[tuple[int, Assignment]] = []
+            deferred:  list[tuple[int, Assignment]] = []
             for source_id, a in assignment.items():
-                if a.launch_turn != self.scene_step:
-                    continue  # deferred; will be re-planned next turn
+                (immediate if a.launch_turn == self.scene_step else deferred).append((source_id, a))
+
+            # If there are deferred sources, the plan needs them to complete the attack.
+            # Emitting only the immediate subset would send an under-strength fleet that
+            # arrives alone and loses, while also marking the target as in-flight so future
+            # candidates exclude it — preventing the deferred sources from ever launching.
+            # Guard: only emit immediate sources if they are sufficient on their own.
+            if deferred:
+                immediate_ships = sum(a.ships for _, a in immediate)
+                # Garrison at the arrival turn of the immediate sources (all share arrival_turn).
+                if immediate:
+                    arr_turn = immediate[0][1].arrival_turn
+                    prod_rate = target_planet.production if target_planet.owner != -1 else 0.0
+                    garrison_at_arrival = target_planet.ships + prod_rate * (arr_turn - self.scene_step)
+                    if immediate_ships <= garrison_at_arrival:
+                        continue  # immediate subset can't win alone; skip this turn, re-plan next
+
+            for source_id, a in immediate:
                 src = planet_by_id.get(source_id)
                 if src is None:
                     continue
@@ -995,15 +1031,23 @@ class Hellburner:
 
     def run_unified_search(self, horizon: int) -> FleetOrders:
         self._warchest_committed_ids = set()
+        enemy_players = {p.owner for p in self.enemy_planets}
+        self.solo_endgame = (len(enemy_players) == 1)
         initial    = self.warchest_initial_state()
 
-        # Pre-advance past all in-flight fleet arrivals so the DFS baseline and every
-        # branch are scored in the same post-arrival reference frame. Without this,
-        # warchest_score(initial) is inflated by unresolved fleet bonuses, causing the
-        # DFS to always prefer the empty sequence over any profitable plan.
-        all_arrivals = [f.arrival_turn for f in initial.friendly_fleets + initial.enemy_fleets]
-        if all_arrivals:
-            self.warchest_advance(initial, max(all_arrivals))
+        # Pre-advance past any in-flight fleet arrivals that have already happened by the
+        # current turn so the DFS baseline and every branch are scored in the same
+        # post-arrival reference frame. Without this, warchest_score(initial) is inflated
+        # by unresolved fleet bonuses, causing the DFS to always prefer the empty sequence
+        # over any profitable plan.
+        # Cap at scene_step: future arrivals (arrival_turn > scene_step) are already
+        # represented as pending WarchestFleet entries and must not shift state.turn forward,
+        # which would make warchest_assign_fleet set launch_turn > scene_step for all
+        # sources and cause warchest_emit_moves to suppress every move.
+        past_arrivals = [f.arrival_turn for f in initial.friendly_fleets + initial.enemy_fleets
+                         if f.arrival_turn <= self.scene_step]
+        if past_arrivals:
+            self.warchest_advance(initial, max(past_arrivals))
 
         candidates = self.warchest_candidates(initial, horizon)
 
