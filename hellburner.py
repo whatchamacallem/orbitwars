@@ -17,23 +17,6 @@ viz = Visualizer()
 def viz_save(seed=None):
     viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html', seed=seed)
 
-
-SHIP_SPEED_MAX      = 6.0    # matches configuration.shipSpeed default
-COMET_RADIUS        = 10.0   # inflated comet radius for path-blocking checks
-
-MAX_DISTANCE        = 35
-ROTATION_LOOK_AHEAD = 10
-REINFORCEMENT_SIZE  = 10
-GARRISON_SIZE       = 10
-
-# Warchest
-TIME_BUDGET_S       = 0.800  # hard wall; return best-found-so-far if exceeded
-DFS_EARLY_EXIT_S    = 0.100  # soft cutoff inside DFS loop (leaves room for emit/reinforce)
-WARCHEST_LOOK_AHEAD = 50     # horizon = min(scene_step + WARCHEST_LOOK_AHEAD, 500)
-MAX_CANDIDATES      = 20     # hard cap on DFS branching factor (reduce to 4 if timing spikes)
-ENEMY_WEIGHT        = 0.8    # penalty multiplier for enemy production (tune toward 1.0)
-
-
 @dataclass(slots=True)
 class Pos:
     x: float
@@ -126,9 +109,11 @@ DestinationList = dict[HPlanet, list[Arrival]]
 FleetOrders = list[FleetOrder]
 
 
-def fleet_speed(ships: int | float) -> float:
+SHIP_SPEED_MAX = 6.0
+
+def fleet_speed(ships: int | float, ship_speed_max: float = SHIP_SPEED_MAX) -> float:
     """Mirror the engine's speed formula exactly."""
-    return min(SHIP_SPEED_MAX, 1.0 + (SHIP_SPEED_MAX - 1.0) * (math.log(ships) / math.log(1000)) ** 1.5)
+    return min(ship_speed_max, 1.0 + (ship_speed_max - 1.0) * (math.log(ships) / math.log(1000)) ** 1.5)
 
 
 def warchest_state_copy(state: 'WarchestState') -> 'WarchestState':
@@ -145,6 +130,21 @@ def warchest_state_copy(state: 'WarchestState') -> 'WarchestState':
 
 class Hellburner:
     def __init__(self):
+
+        self.COMET_RADIUS        = 20.0   # inflated comet radius for path-blocking checks
+
+        self.MAX_DISTANCE        = 38
+        self.ROTATION_LOOK_AHEAD = 10
+        self.REINFORCEMENT_SIZE  = 17
+        self.GARRISON_SIZE       = 11
+
+        # Warchest
+        self.TIME_BUDGET_S       = 0.800  # hard wall; return best-found-so-far if exceeded
+        self.DFS_EARLY_EXIT_S    = 0.100  # soft cutoff inside DFS loop (leaves room for emit/reinforce)
+        self.WARCHEST_LOOK_AHEAD = 50     # horizon = min(scene_step + WARCHEST_LOOK_AHEAD, 500)
+        self.MAX_CANDIDATES      = 20     # hard cap on DFS branching factor (reduce to 4 if timing spikes)
+        self.ENEMY_PROD_WEIGHT   = 0.8    # penalty multiplier for enemy production (tune toward 1.0)
+        self.ENEMY_ATTACK_WEIGHT = 0.2    # penalty multiplier for losses to attacking enemy in endgame
 
         self.player: int = 0
         self.scene_step: int = 0
@@ -197,7 +197,7 @@ class Hellburner:
         for p in self.planets:
             orb = self.orbital_info[p]
             if orb is not None:
-                a = orb.initial_angle + self.angular_velocity * (self.scene_step + 1 + ROTATION_LOOK_AHEAD)
+                a = orb.initial_angle + self.angular_velocity * (self.scene_step + 1 + self.ROTATION_LOOK_AHEAD)
                 self.future_pos[p] = Pos(cx + orb.r * math.cos(a), cy + orb.r * math.sin(a))
             else:
                 self.future_pos[p] = Pos(p.x, p.y)
@@ -209,7 +209,7 @@ class Hellburner:
                     continue
                 fp = self.future_pos[dst]
                 travel = distance((src.x, src.y), (fp.x, fp.y))
-                if travel <= MAX_DISTANCE:
+                if travel <= self.MAX_DISTANCE:
                     self.inbound_edges[dst].append(GraphEdge(src, travel))
 
         # self.outbound_edges[p] = [GraphEdge(dst, travel)] — keyed by source, complement of the inbound-keyed inbound_edges.
@@ -262,7 +262,7 @@ class Hellburner:
         for planet in self.all_bodies:
             if planet is source:
                 continue
-            check_radius = COMET_RADIUS if planet.id in self.comet_ids else planet.radius
+            check_radius = self.COMET_RADIUS if planet.id in self.comet_ids else planet.radius
             ic = self.intercept_planet(sx, sy, planet, ships)
             dist = distance((sx, sy), (ic.x, ic.y))
             if dist < check_radius:
@@ -291,7 +291,7 @@ class Hellburner:
             best = None
             best_t = float('inf')
             for planet in self.all_bodies:
-                check_radius = COMET_RADIUS if planet.id in self.comet_ids else planet.radius
+                check_radius = self.COMET_RADIUS if planet.id in self.comet_ids else planet.radius
                 ic = self.intercept_planet(fleet.x, fleet.y, planet, fleet.ships)
                 dist = distance((fleet.x, fleet.y), (ic.x, ic.y))
                 if dist < check_radius:
@@ -359,7 +359,7 @@ class Hellburner:
         for p in self.owned_planets:
             if p.reinforcement_target is None:
                 continue
-            if p.ships < (REINFORCEMENT_SIZE + GARRISON_SIZE):
+            if p.ships < (self.REINFORCEMENT_SIZE + self.GARRISON_SIZE):
                 continue
             has_enemy_incoming = any(
                 e.planet.owner != self.player
@@ -367,7 +367,7 @@ class Hellburner:
             if has_enemy_incoming:
                 continue
             target = p.reinforcement_target
-            ships = int(p.ships - GARRISON_SIZE)
+            ships = int(p.ships - self.GARRISON_SIZE)
             ic = self.intercept_planet(p.x, p.y, target, ships)
             if not math.isfinite(ic.travel):
                 continue
@@ -808,7 +808,7 @@ class Hellburner:
             if owner == self.player:
                 total += garrison + prod * remaining
             elif owner != -1:
-                total -= (garrison + prod * remaining) * ENEMY_WEIGHT
+                total -= (garrison + prod * remaining) * self.ENEMY_PROD_WEIGHT
 
         for f in state.friendly_fleets:
             total += f.garrison_on_arrival
@@ -833,7 +833,7 @@ class Hellburner:
             remaining_after = max(0, horizon - f.arrival_turn)
             if f.fleet_size >= garrison_at_arrival:
                 # Enemy likely captures: penalise the production income we'll lose on both sides.
-                total -= prod * remaining_after * (1.0 + ENEMY_WEIGHT)
+                total -= prod * remaining_after * (1.0 + self.ENEMY_PROD_WEIGHT)
             else:
                 # Enemy damages but doesn't capture: penalise ships lost.
                 total -= f.fleet_size
@@ -865,7 +865,7 @@ class Hellburner:
             # which computes the true turn-based arrival time (inbound_edges holds distance, not turns).
             earliest_turn = self.warchest_earliest_capture(state, p, horizon)
             production_turns = max(0, horizon - earliest_turn) if math.isfinite(earliest_turn) else 0
-            prod_multiplier = (1.0 + ENEMY_WEIGHT) if self.solo_endgame else 1.0
+            prod_multiplier = (1.0 + self.ENEMY_PROD_WEIGHT) if self.solo_endgame else 1.0
             net_gain = p.production * production_turns * prod_multiplier - capture_cost
             if net_gain > 0:
                 bound      += net_gain
@@ -955,14 +955,14 @@ class Hellburner:
             ct = self.warchest_earliest_capture(initial, p, horizon)
             if not math.isfinite(ct):
                 continue
-            prod_multiplier = (1.0 + ENEMY_WEIGHT) if self.solo_endgame else 1.0
-            ship_cost = 0.0 if self.solo_endgame else p.ships
+            prod_multiplier = (1.0 + self.ENEMY_PROD_WEIGHT) if self.solo_endgame else 1.0
+            ship_cost = self.ENEMY_ATTACK_WEIGHT * p.ships if self.solo_endgame else p.ships
             gain = p.production * (horizon - ct) * prod_multiplier - ship_cost
             if gain > 0:
                 offense.append((p, gain))
 
         offense.sort(key=lambda x: x[1], reverse=True)
-        return (defense + [p for p, _ in offense])[:MAX_CANDIDATES]
+        return (defense + [p for p, _ in offense])[:self.MAX_CANDIDATES]
 
     def warchest_emit_moves(self, sequence) -> FleetOrders:
         moves: FleetOrders = []
@@ -1007,7 +1007,7 @@ class Hellburner:
             best[0] = score
             best[1] = list(sequence)
 
-        if time.perf_counter() - t0 > DFS_EARLY_EXIT_S:
+        if time.perf_counter() - t0 > self.DFS_EARLY_EXIT_S:
             return  # soft cutoff; return best found so far
 
         if not remaining:
@@ -1196,7 +1196,7 @@ class Hellburner:
         self.build_destination_list()
         self.build_reinforcement_targets()
 
-        horizon = min(self.scene_step + WARCHEST_LOOK_AHEAD, 500)
+        horizon = min(self.scene_step + self.WARCHEST_LOOK_AHEAD, 500)
         moves   = self.run_unified_search(horizon)
 
         reinforcement_orders = self.send_reinforcements()
@@ -1231,3 +1231,20 @@ def agent(obs: dict[str, Any]) -> list[Any]:
         except Exception:
             pass
         return []
+
+
+def make_agent(**overrides):
+    """Return an agent function with the given constants overridden.
+
+    Example:
+        challenger = make_agent(REINFORCEMENT_SIZE=12, GARRISON_SIZE=8)
+    """
+    def _agent(obs: dict[str, Any]) -> list[Any]:
+        h = Hellburner()
+        for k, v in overrides.items():
+            setattr(h, k, v)
+        try:
+            return [[o.planet_id, o.angle, o.ships] for o in h.main(obs)]
+        except Exception:
+            return []
+    return _agent

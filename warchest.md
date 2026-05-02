@@ -40,7 +40,7 @@ WARCHEST_LOOK_AHEAD  = 25     # horizon = min(scene_step + WARCHEST_LOOK_AHEAD, 
 MAX_CANDIDATES      = 6      # hard cap on DFS branching factor (reduce to 4 if timing spikes)
 
 # Scoring
-ENEMY_WEIGHT        = 0.8    # penalty multiplier for enemy production (tune toward 1.0)
+ENEMY_PROD_WEIGHT        = 0.8    # penalty multiplier for enemy production (tune toward 1.0)
 
 # Post-pass thresholds (unchanged from baseline)
 GARRISON_SIZE       = 10
@@ -720,7 +720,7 @@ def warchest_score(self, state: WarchestState, horizon: int) -> float:
         if owner == self.player:
             total += garrison + prod * remaining
         elif owner != -1:
-            total -= (garrison + prod * remaining) * ENEMY_WEIGHT
+            total -= (garrison + prod * remaining) * ENEMY_PROD_WEIGHT
 
     for f in state.friendly_fleets:
         total += f.garrison_on_arrival
@@ -745,7 +745,7 @@ def warchest_score(self, state: WarchestState, horizon: int) -> float:
         remaining_after = max(0, horizon - f.arrival_turn)
         if f.fleet_size >= garrison_at_arrival:
             # Enemy likely captures: penalise the production income we'll lose on both sides.
-            total -= prod * remaining_after * (1.0 + ENEMY_WEIGHT)
+            total -= prod * remaining_after * (1.0 + ENEMY_PROD_WEIGHT)
         else:
             # Enemy damages but doesn't capture: penalise ships lost.
             total -= f.fleet_size
@@ -753,7 +753,7 @@ def warchest_score(self, state: WarchestState, horizon: int) -> float:
     return total
 ```
 
-`ENEMY_WEIGHT = 0.8`. The game is won by **total ships at step 500**, so every ship the enemy
+`ENEMY_PROD_WEIGHT = 0.8`. The game is won by **total ships at step 500**, so every ship the enemy
 produces is a ship you don't have. Capturing an enemy planet is a 2× swing (you gain income,
 they lose income), meaning the theoretically correct weight is 1.0. Start at 0.8 to avoid
 over-aggressiveness against strongly defended planets; tune up toward 1.0 if the bot
@@ -843,7 +843,7 @@ Defense is **not** a mandatory pre-pass. It enters the DFS as a regular candidat
 to defend a planet is greater than the production gain from attacking an enemy planet instead,
 attacking is the correct choice. The `warchest_score` function makes this comparison
 automatically — losing a planet drops garrison + prod × remaining; capturing an enemy planet
-adds prod × remaining and removes ENEMY_WEIGHT × their production. The DFS explores both
+adds prod × remaining and removes ENEMY_PROD_WEIGHT × their production. The DFS explores both
 and picks the highest score.
 
 ### 10.1 Defense Candidate Detection
@@ -1155,7 +1155,7 @@ def main(self, obs: dict) -> list:
 1. Update `main()`: add `all_bodies`, `owned_comets`, `comet_ids`; remove old branching
 2. Update `build_orbital_info` to iterate `self.all_bodies` and register comets as `None` (§11.2)
 3. Update `first_planet_hit` and `build_destination_list` to iterate `self.all_bodies` (§11.3)
-4. Add module-level constants: `TIME_BUDGET_S`, `DFS_EARLY_EXIT_S`, `WARCHEST_LOOK_AHEAD`, `MAX_CANDIDATES`, `ENEMY_WEIGHT`, `GARRISON_SIZE`, `REINFORCEMENT_SIZE`
+4. Add module-level constants: `TIME_BUDGET_S`, `DFS_EARLY_EXIT_S`, `WARCHEST_LOOK_AHEAD`, `MAX_CANDIDATES`, `ENEMY_PROD_WEIGHT`, `GARRISON_SIZE`, `REINFORCEMENT_SIZE`
 5. Add `WarchestFleet`, `WarchestState` dataclasses; add `self._warchest_committed_ids: set[int] = set()` to `__init__`
 6. Implement `warchest_state_copy`
 7. Implement `warchest_advance` (production-first order)
@@ -1171,4 +1171,4 @@ def main(self, obs: dict) -> list:
 17. Implement `drain_comets`
 18. Wire into `main()`, remove `run_early_game` / `evaluate_move_orders`
 19. Add viz hooks: candidates list, assignment per node, score at each node, timing
-20. Tune `WARCHEST_LOOK_AHEAD`, `ENEMY_WEIGHT`, `MAX_CANDIDATES` empirically vs. baseline
+20. Tune `WARCHEST_LOOK_AHEAD`, `ENEMY_PROD_WEIGHT`, `MAX_CANDIDATES` empirically vs. baseline

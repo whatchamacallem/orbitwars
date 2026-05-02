@@ -365,7 +365,7 @@ class TestWarchestScore(unittest.TestCase):
         self.assertAlmostEqual(score, 125.0)
 
     def test_enemy_planet_penalised(self):
-        """Enemy planets are subtracted at ENEMY_WEIGHT=0.8.
+        """Enemy planets are subtracted at ENEMY_PROD_WEIGHT=0.8.
         owned: 50+3*25=125; enemy: -(20+2*25)*0.8=−56; total=69."""
         h = self._make_h()
         state = make_warchest_state(

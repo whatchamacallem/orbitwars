@@ -446,7 +446,7 @@ class HellburnerIntegrationTest(unittest.TestCase):
 
         Fix: when exactly one enemy player remains (_solo_endgame=True), run_unified_search
         overrides horizon=500 (full game) and warchest_candidates uses:
-          gain = prod * (horizon - ct) * (1 + ENEMY_WEIGHT)  [no ship-cost penalty]
+          gain = prod * (horizon - ct) * (1 + ENEMY_PROD_WEIGHT)  [no ship-cost penalty]
         In a 1v1 endgame ships spent don't reduce your winning margin relative to the opponent
         (they lose as many on defense), so garrison cost is 0 and production gain is doubled
         (capturing swings our prod up AND enemy prod down by the same amount).
