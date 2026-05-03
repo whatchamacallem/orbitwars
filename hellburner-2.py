@@ -1,4 +1,3 @@
-#%%writefile main.py
 import math
 import time
 import sys
