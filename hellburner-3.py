@@ -1,7 +1,6 @@
 #%%writefile main.py
 import math
 import time
-import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -10,12 +9,6 @@ from kaggle_environments.envs.orbit_wars.orbit_wars import (
     Fleet, CENTER, ROTATION_RADIUS_LIMIT, SUN_RADIUS,
     distance, point_to_segment_distance
 )
-
-sys.path.insert(0, '/home/t/orbitwars')
-from visualizer import Visualizer
-viz = Visualizer()
-def viz_save(seed=None):
-    viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html', seed=seed)
 
 @dataclass(slots=True)
 class Pos:
@@ -1177,90 +1170,7 @@ class Hellburner:
             orders.append(FleetOrder(comet.id, ic.angle, ships))
         return orders
 
-    # ------------------------------------------------------------------
-    # viz
-
-    @dataclass(slots=True)
-    class ArrowEndpoints:
-        sx: float
-        sy: float
-        ex: float
-        ey: float
-
-    @staticmethod
-    def viz_arrow_endpoints(
-        px: float, py: float, tx: float, ty: float,
-        origin_radius: float, target_radius: float,
-    ) -> ArrowEndpoints:
-        dx, dy = tx - px, ty - py
-        d = math.hypot(dx, dy)
-        if d < 1e-6:
-            return ArrowEndpoints(px, py, tx, ty)
-        ux, uy = dx / d, dy / d
-        return ArrowEndpoints(
-            px + ux * origin_radius, py + uy * origin_radius,
-            tx - ux * target_radius, ty - uy * target_radius,
-        )
-
-    def viz_proximity_graph(self, show_inbound: bool = True) -> None:
-        """Draw directed edges from each planet's current position to the target's future_pos."""
-        edge_map = self.inbound_edges if show_inbound else self.outbound_edges
-        direction = 'inbound' if show_inbound else 'outbound'
-
-        on_screen: list[str] = []
-        for p in sorted(self.planets, key=lambda p: p.id):
-            if p.owner == -1:
-                continue
-            neighbors = edge_map.get(p, [])
-            if not neighbors:
-                continue
-            px, py = p.x, p.y
-            neighbor_strs: list[str] = []
-            for edge in neighbors:
-                fp = self.future_pos[edge.planet]
-                ae = self.viz_arrow_endpoints(px, py, fp.x, fp.y, p.radius, edge.planet.radius)
-                color = '#ff8844' if p.owner == 1 else '#22aaff'
-                viz.add_arrow(self.scene_step, ae.sx, ae.sy, ae.ex, ae.ey, color=color, width=1, length_frac=1.0, head_size=5)
-                neighbor_strs.append(f'P{edge.planet.id}({edge.travel:.0f})')
-            on_screen.append(f'  P{p.id}: [{", ".join(neighbor_strs)}]')
-
-        edge_count = sum(len(v) for v in edge_map.values())
-        header = f'{direction}_edges:'
-        viz.add_text(self.scene_step, header + '\n' + '\n'.join(on_screen))
-
-    def viz_reinforcement_targets(self) -> None:
-        """Draw reinforcement_target arrows from each owned planet's current pos to target's current pos."""
-        lines: list[str] = []
-        for p in sorted(self.owned_planets, key=lambda p: p.id):
-            if p.reinforcement_target is None:
-                continue
-            px, py = p.x, p.y
-            tx, ty = p.reinforcement_target.x, p.reinforcement_target.y
-            ae = self.viz_arrow_endpoints(px, py, tx, ty, p.radius, p.reinforcement_target.radius)
-            viz.add_arrow(self.scene_step, ae.sx, ae.sy, ae.ex, ae.ey, color='#44ff88', width=1, length_frac=1.0, head_size=5)
-            lines.append(f'  P{p.id} -> P{p.reinforcement_target.id}')
-
-        if lines:
-            viz.add_text(self.scene_step, f'reinforcement_targets ({len(lines)}):\n' + '\n'.join(lines))
-        else:
-            viz.add_text(self.scene_step, 'reinforcement_targets: none')
-
-    def viz_destination_list(self) -> None:
-        """Draw a line from each fleet to its destination planet's arrival position."""
-        lines = []
-        for planet, arrivals in self.destination_list.items():
-            for arr in arrivals:
-                color = '#44ff88' if arr.owner == 0 else '#ff8844'
-                viz.add_line(self.scene_step, arr.src_x, arr.src_y, arr.arrival_x, arr.arrival_y, color=color, width=1)
-                lines.append(f' {arr.owner} ({arr.ships}) -> P{planet.id}({planet.ships}) t={round(arr.travel_time)} v={fleet_speed(arr.ships):.2f}')
-        if lines:
-            viz.add_text(self.scene_step, 'dest_list:\n' + '\n'.join(lines))
-
-    # ------------------------------------------------------------------
-
     def main(self, obs: dict[str, Any]) -> list[Any]:
-        viz.record(obs)
-        _t0 = time.perf_counter()
 
         self.player           = obs['player']
         self.scene_step       = obs['step'] - 1
@@ -1296,15 +1206,6 @@ class Hellburner:
         comet_orders = self.drain_comets()
         moves.extend(comet_orders)
 
-        elapsed_ms = (time.perf_counter() - _t0) * 1000
-        viz.add_text(self.scene_step, f'Hellburner ms: {elapsed_ms:.2f}ms')
-
-        # DO NOT DELETE:
-        #self.viz_proximity_graph(False) # inbound: True, outbound: False.
-        #self.viz_reinforcement_targets()
-        #self.viz_destination_list()
-        #viz.add_text(self.scene_step, 'moves: ' + str(moves))
-
         return moves
 
 
@@ -1313,27 +1214,5 @@ def agent(obs: dict[str, Any]) -> list[Any]:
     try:
         return [[o.planet_id, o.angle, o.ships] for o in _agent.main(obs)]
     except Exception:
-        import traceback
-        tb = traceback.format_exc()
-        try:
-            viz.add_text(_agent.scene_step, tb)
-        except Exception:
-            pass
         return []
 
-
-def make_agent(**overrides):
-    """Return an agent function with the given constants overridden.
-
-    Example:
-        challenger = make_agent(REINFORCEMENT_SIZE=12, GARRISON_SIZE=8)
-    """
-    def _agent(obs: dict[str, Any]) -> list[Any]:
-        h = Hellburner()
-        for k, v in overrides.items():
-            setattr(h, k, v)
-        try:
-            return [[o.planet_id, o.angle, o.ships] for o in h.main(obs)]
-        except Exception:
-            return []
-    return _agent
