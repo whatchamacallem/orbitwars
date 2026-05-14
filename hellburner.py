@@ -14,8 +14,8 @@ from kaggle_environments.envs.orbit_wars.orbit_wars import (
 sys.path.insert(0, '/home/t/orbitwars')
 from visualizer import Visualizer
 viz = Visualizer()
-def viz_save():
-    viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html')
+def viz_save(seed):
+    viz.save('/mnt/c/Users/ajohn/Downloads/orbitwars_viz.html', seed)
 
 class HPlanet:
     def __init__(self, id, owner, x, y, radius, ships, production):
