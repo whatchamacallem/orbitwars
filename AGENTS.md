@@ -10,6 +10,8 @@ command not `python`.
 
 Read `rules.md` for all the rules. Never abbreviate.
 
+Do not delete commented out code. It is there for a reason.
+
 ## Notebooks
 
 Do not push a notebook to kaggle unless explicitly asked.
