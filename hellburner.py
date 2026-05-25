@@ -413,7 +413,16 @@ class Hellburner:
 
         fleet_orders: FleetOrders = []
         intercepts: list[Intercept] = []
-        trial_destination_list = {k: list(v) for k, v in self.destination_list.items()}
+        # Scale enemy ships at the target down to 50% — only half may actually threaten us.
+        trial_destination_list = {}
+        for _p, _entries in self.destination_list.items():
+            if _p is target:
+                trial_destination_list[_p] = [
+                    (o, int(s * 0.5) if o != self.player else s, t, x, y, bx, by)
+                    for o, s, t, x, y, bx, by in _entries
+                ]
+            else:
+                trial_destination_list[_p] = list(_entries)
         trial_destination_list.setdefault(target, [])
         battle_won = False
 
@@ -424,7 +433,7 @@ class Hellburner:
             for owner, _, t, _, _, _, _ in self.destination_list.get(target, []):
                 if owner != self.player and owner != target.owner:
                     turn = math.ceil(t)
-                    if second_enemy_arrival is None or turn > second_enemy_arrival:
+                    if second_enemy_arrival is None or turn < second_enemy_arrival:
                         second_enemy_arrival = turn
 
         for neighbor, _ in possible_origins:
@@ -440,15 +449,16 @@ class Hellburner:
             if not_doomed:
                 worst_case_dl = {k: list(v) for k, v in self.destination_list.items()}
                 worst_case_dl.setdefault(neighbor, [])
+                half_pressure = 0
                 for attacker, _ in self.inbound_edges.get(neighbor, []):
                     if attacker.owner == self.player or attacker.owner == -1 or attacker.ships == 0:
                         continue
                     _, ax, ay, atk_travel = self.intercept_planet(attacker.x, attacker.y, neighbor, attacker.ships)
                     if not math.isfinite(atk_travel):
                         continue
-                    worst_case_dl[neighbor].append((attacker.owner, attacker.ships, atk_travel, attacker.x, attacker.y, ax, ay))
-
-                enemy_pressure = sum(e[1] for e in worst_case_dl.get(neighbor, []))
+                    half_ships = max(1, int(attacker.ships * 0.5))
+                    worst_case_dl[neighbor].append((attacker.owner, half_ships, atk_travel, attacker.x, attacker.y, ax, ay))
+                    half_pressure += half_ships
 
                 saved_ships = neighbor.ships
                 neighbor.ships = 0
@@ -461,7 +471,8 @@ class Hellburner:
                         continue
                     # Knowingly sacrificing neighbor — send all ships.
                 else:
-                    ships_to_send = max(0, int(neighbor.ships) - enemy_pressure)
+                    # Neighbor holds worst-case; keep 50% of enemy pressure as a garrison buffer.
+                    ships_to_send = max(0, int(neighbor.ships) - half_pressure)
                     if ships_to_send == 0:
                         continue
 
@@ -485,13 +496,17 @@ class Hellburner:
                 battle_won = True
 
                 if not_doomed:
-                    # Try leaving half the excess ships behind.
+                    # Try leaving half the excess ships behind; re-simulate to confirm still winning.
                     keep = int(excess_ships // 2)
-                    ships_to_send = max(1, ships_to_send - keep)
-                    angle, ix, iy, travel = self.intercept_planet(neighbor.x, neighbor.y, target, ships_to_send)
-                    if not math.isfinite(travel):
-                        break
-                    trial_destination_list[target][-1] = (self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy)
+                    trimmed = max(1, ships_to_send - keep)
+                    t_angle, t_ix, t_iy, t_travel = self.intercept_planet(neighbor.x, neighbor.y, target, trimmed)
+                    if math.isfinite(t_travel):
+                        trial_destination_list[target][-1] = (self.player, trimmed, t_travel, neighbor.x, neighbor.y, t_ix, t_iy)
+                        if self.simulate_planet_timeline(target, trial_destination_list)[0] == self.player:
+                            ships_to_send, angle, ix, iy, travel = trimmed, t_angle, t_ix, t_iy, t_travel
+                        else:
+                            # Trim would lose the battle; revert.
+                            trial_destination_list[target][-1] = (self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy)
                     fleet_orders[-1] = [neighbor.id, angle, ships_to_send]
                     intercepts[-1] = (ix, iy, travel)
                 break
@@ -622,7 +637,7 @@ class Hellburner:
         for source in state.owned:
             current_ships = state.garrison[source]
             production_rate = state.production[source]
-            for wait_turns in range(EARLY_LOOK_AHEAD):
+            for wait_turns in range(self.EARLY_LOOK_AHEAD):
                 fleet_size = int(current_ships + production_rate * wait_turns)
                 if fleet_size <= garrison_size:
                     continue
