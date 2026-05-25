@@ -497,16 +497,19 @@ class Hellburner:
 
                 if not_doomed:
                     # Try leaving half the excess ships behind; re-simulate to confirm still winning.
+                    # Never trim below 10 ships (small fleets move slowly and may miss the battle window).
                     keep = int(excess_ships // 2)
-                    trimmed = max(1, ships_to_send - keep)
-                    t_angle, t_ix, t_iy, t_travel = self.intercept_planet(neighbor.x, neighbor.y, target, trimmed)
-                    if math.isfinite(t_travel):
-                        trial_destination_list[target][-1] = (self.player, trimmed, t_travel, neighbor.x, neighbor.y, t_ix, t_iy)
-                        if self.simulate_planet_timeline(target, trial_destination_list)[0] == self.player:
-                            ships_to_send, angle, ix, iy, travel = trimmed, t_angle, t_ix, t_iy, t_travel
-                        else:
-                            # Trim would lose the battle; revert.
-                            trial_destination_list[target][-1] = (self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy)
+                    trimmed = max(10, ships_to_send - keep)
+                    if trimmed < ships_to_send:
+                        t_angle, t_ix, t_iy, t_travel = self.intercept_planet(neighbor.x, neighbor.y, target, trimmed)
+                        if math.isfinite(t_travel):
+                            trial_destination_list[target][-1] = (self.player, trimmed, t_travel, neighbor.x, neighbor.y, t_ix, t_iy)
+                            if self.simulate_planet_timeline(target, trial_destination_list)[0] == self.player:
+                                ships_to_send, angle, ix, iy, travel = trimmed, t_angle, t_ix, t_iy, t_travel
+                            else:
+                                # Trim would lose the battle; revert entry and keep original fleet.
+                                trial_destination_list[target][-1] = (self.player, ships_to_send, travel, neighbor.x, neighbor.y, ix, iy)
+                        # If t_travel is not finite, trimmed fleet can't reach target — keep original.
                     fleet_orders[-1] = [neighbor.id, angle, ships_to_send]
                     intercepts[-1] = (ix, iy, travel)
                 break
